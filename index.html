@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>Prairie Canvassing</title>
+<meta name="theme-color" content="#102d37">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Canvassing">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header id="header">
+  <div class="title-row">
+    <img src="icon-192.png" alt="" class="logo">
+    <div class="titles">
+      <h1>Prairie Canvassing</h1>
+      <div id="summary">Today: 0 doors</div>
+    </div>
+    <button id="syncBtn" class="sync" aria-label="Sharing and account">
+      <span id="syncDot" class="dot off"></span><span id="syncText">Not shared</span>
+    </button>
+  </div>
+  <nav class="tabs">
+    <button id="tabMap" class="tab on">Map</button>
+    <button id="tabHistory" class="tab">History</button>
+  </nav>
+</header>
+
+<main id="workspace">
+  <section id="mapPanel">
+    <div id="map" aria-label="Map. Tap a house to log a visit."></div>
+    <button id="searchBtn" class="float search">Search</button>
+    <div class="controls">
+      <button id="layerBtn" class="float layer">Satellite</button>
+      <button id="zoomIn" class="float round" aria-label="Zoom in">+</button>
+      <button id="zoomOut" class="float round" aria-label="Zoom out">−</button>
+    </div>
+    <button id="locateBtn" class="float locate" aria-label="Go to my location">◎</button>
+    <div id="hint" class="hint">Zoom in to see and tap houses</div>
+    <a id="attribution" class="attribution" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener"></a>
+  </section>
+
+  <section id="historyPanel" hidden>
+    <div id="chips" class="chips"></div>
+    <div class="tools">
+      <button id="exportBtn" class="plain">Export CSV</button>
+      <label class="plain file">Import CSV<input id="importInput" type="file" accept=".csv,text/csv,text/plain"></label>
+    </div>
+    <div id="historyList" class="list"></div>
+  </section>
+</main>
+
+<!-- door sheet -->
+<div id="sheetBack" class="back" hidden></div>
+<div id="sheet" class="sheet" hidden role="dialog" aria-label="Log a visit">
+  <div class="grip"></div>
+  <input id="addr" class="field big" type="text" placeholder="Address" autocomplete="off" autocapitalize="words" maxlength="220">
+  <div id="addrSource" class="source"></div>
+  <div id="lastVisit" class="last" hidden></div>
+  <textarea id="note" class="field" rows="2" placeholder="Notes (optional)" maxlength="2000"></textarea>
+  <div id="outcomeLabel" class="label">Tap the result to save</div>
+  <div id="outcomes" class="outcomes"></div>
+  <div id="sheetActions" class="actions"></div>
+</div>
+
+<!-- search -->
+<div id="search" class="fullscreen" hidden role="dialog" aria-label="Search addresses">
+  <div class="search-top">
+    <input id="searchInput" class="field" type="search" placeholder="e.g. 459 Ridge or Kollmeyer" autocomplete="off" enterkeyhint="search">
+    <button id="searchClose" class="plain">Close</button>
+  </div>
+  <div id="searchStatus" class="muted">Type a house number and street.</div>
+  <div id="searchResults" class="list"></div>
+</div>
+
+<!-- account / sharing -->
+<div id="account" class="fullscreen" hidden role="dialog" aria-label="Sharing">
+  <div class="search-top">
+    <h2>Share doors with your crew</h2>
+    <button id="accountClose" class="plain">Close</button>
+  </div>
+  <div id="accountBody"></div>
+</div>
+
+<!-- simple message box (alerts are blocked in some places) -->
+<div id="dialogBack" class="back top" hidden></div>
+<div id="dialog" class="dialog" hidden role="alertdialog">
+  <h3 id="dialogTitle"></h3>
+  <p id="dialogText"></p>
+  <div id="dialogButtons" class="actions"></div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+<div id="installTip" class="install" hidden>
+  <b>Add to your Home Screen</b> so it opens like an app and keeps your doors safe:
+  tap <span class="share">Share</span> then <b>Add to Home Screen</b>.
+  <button id="installClose" aria-label="Dismiss">✕</button>
+</div>
+
+<script src="vendor/leaflet.js"></script>
+<script src="config.js"></script>
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
