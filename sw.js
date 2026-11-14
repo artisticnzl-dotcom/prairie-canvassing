@@ -1,5 +1,5 @@
 /* Keeps the app itself on the phone so it opens with no signal. Maps and addresses still need a connection. */
-const VERSION = 'pc-web-1';
+const VERSION = 'pc-web-2';
 const FILES = ['./', 'index.html', 'app.css', 'app.js', 'core.js', 'config.js', 'vendor/leaflet.js', 'vendor/leaflet.css',
   'icon-180.png', 'icon-192.png', 'icon-512.png', 'manifest.webmanifest'];
 self.addEventListener('install', e => {

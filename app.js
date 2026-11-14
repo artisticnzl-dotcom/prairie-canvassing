@@ -309,7 +309,7 @@
     }
     dot.className = 'dot ' + cls;
     text.textContent = t;
-    if (!$('account').hidden) buildAccount();
+    if (!$('account').hidden) buildAccount(false);
   }
 
   // ================================================================ houses (outlines + official addresses)
@@ -1008,21 +1008,28 @@
   }
 
   // ================================================================ account / sharing screen
-  $('syncBtn').onclick = () => { $('account').hidden = false; buildAccount(); };
+  $('syncBtn').onclick = () => { $('account').hidden = false; buildAccount(true); };
   $('accountClose').onclick = () => { $('account').hidden = true; };
-  function buildAccount() {
+  function buildAccount(force) {
     const body = $('accountBody');
+    // Never wipe a sign-in form someone is typing into; status updates only refresh the signed-in view.
+    if (!force && body.dataset.view === 'form' && Sync.configured && !Sync.session) return;
     body.innerHTML = '';
+    body.dataset.view = '';
     if (!Sync.configured) {
       body.append(el('p', '', 'Sharing isn’t set up yet. Doors are saved on this phone only.'));
       return;
     }
     if (!Sync.session) {
+      body.dataset.view = 'form';
       body.append(el('p', '', 'Sign in with the email and password from your crew lead. Doors you mark will show up on every crew phone — Android and iPhone — and theirs on yours.'));
       const email = el('input', 'field');
       email.type = 'email'; email.placeholder = 'Email'; email.autocomplete = 'username'; email.autocapitalize = 'off';
+      email.name = 'email'; email.setAttribute('autocorrect', 'off'); email.spellcheck = false; email.enterKeyHint = 'next';
+      email.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); pw.focus(); } });
       const pw = el('input', 'field');
       pw.type = 'password'; pw.placeholder = 'Password'; pw.autocomplete = 'current-password';
+      pw.name = 'password'; pw.enterKeyHint = 'go';
       const go = el('button', 'plain primary', 'Sign in');
       const msg = el('p', '', '');
       go.onclick = async () => {
