@@ -1,6 +1,6 @@
 /* Generated from shared/agreement.json — the same wording the Android app uses. */
 window.PC_AGREEMENT = {
-  "template": "PLP-SA-2026-11.2",
+  "template": "PLP-SA-2026-11.3",
   "review_note": "Draft for legal review before production use.",
   "title": "Dryer Vent Service Agreement",
   "sections": [
@@ -26,7 +26,8 @@ window.PC_AGREEMENT = {
     },
     {
       "heading": "6. Your right to cancel",
-      "text": "This is a home solicitation sale. You may cancel this agreement at any time before midnight of the third business day after the date of this transaction, without any penalty or obligation, as explained in the Notice of Cancellation attached to this agreement. You keep this right even if the work begins before the cancellation period ends. Business days do not include Sundays or legal holidays. You will receive a completed copy of this agreement and two copies of the Notice of Cancellation."
+      "text": "This is a home solicitation sale. You may cancel this agreement at any time before midnight of the third business day after the date of this transaction, without any penalty or obligation, as explained in the Notice of Cancellation attached to this agreement. You keep this right even if the work begins before the cancellation period ends. Business days do not include Sundays or legal holidays. You will receive a completed copy of this agreement and two copies of the Notice of Cancellation.",
+      "id": "cancel"
     },
     {
       "heading": "7. Changes to this agreement",
@@ -52,5 +53,18 @@ window.PC_AGREEMENT = {
     "scheduled": "The work is scheduled for {{service_date}}{{service_window}}, after your cancellation period ends at midnight of {{cancel_by_date}}. No work will be done and no payment will be collected before the scheduled date. If you need a different date, contact us and we will reschedule at no charge.",
     "now_customer_tick": "Customer: I asked for the work to be done today. I understand I can still cancel until midnight of {{cancel_by_date}} and get all my money back.",
     "scheduled_customer_tick": "Customer: I understand the work is scheduled for {{service_date}}{{service_window}}, after my cancellation period ends."
+  },
+  "requested": {
+    "section": {
+      "heading": "6. Visit at your request",
+      "text": "You contacted {{business_name}} on {{request_date}} by {{request_method}} and asked us to come to your home to clean or maintain your dryer vent. Because you asked for this repair or maintenance visit, the three-day cancellation right for door-to-door sales does not apply to the services listed above. If we offer you any other service during this visit, it will be on a separate agreement that includes your three-day right to cancel."
+    },
+    "now": "The work will be done today, {{service_date}}.",
+    "scheduled": "The work is scheduled for {{service_date}}{{service_window}}. If you need a different date, contact us and we will reschedule at no charge.",
+    "acknowledgment": "By signing below, I confirm that I have read this entire agreement, including the itemized services and the total price of {{total}}, and that I contacted {{business_name}} and asked for this visit.",
+    "technician_tick": "Technician: The customer contacted us on {{request_date}} by {{request_method}} and asked us to come for this service. Nothing on this agreement was added during the visit.",
+    "customer_tick": "Customer: I contacted {{business_name}} and asked them to come to my home for this service.",
+    "now_customer_tick": "Customer: I understand the work will be done today.",
+    "scheduled_customer_tick": "Customer: I understand the work is scheduled for {{service_date}}{{service_window}}."
   }
 };

@@ -309,49 +309,100 @@
           input(a, 'State', c.state, { max: 2, caps: 'characters', half: true, onInput: v => { c.state = v.toUpperCase(); } }).classList.add('short');
           const zp = input(a, 'ZIP', c.zip, { mode: 'numeric', max: 10, half: true, onInput: v => { c.zip = v; } });
           const today = PJ.ymd(new Date());
-          const first = PJ.firstScheduleDate(today);
-          const d = card(body, 'When will the work be done?');
-          d.appendChild(el('p', 'tip', 'Ask the customer which they prefer. They can cancel until midnight of ' + PJ.longDate(PJ.cancelBy(today)) + ' either way.'));
-          const choices = el('div', 'timing');
-          const when = el('div', '');
-          const pick = (key, title, sub) => {
-            const b = el('button', 'plain choice', '');
-            b.type = 'button';
-            b.append(el('b', '', title), el('span', '', sub));
-            b.onclick = () => { j.timing = key; drawWhen(); };
-            choices.appendChild(b);
-            return b;
+          const requestedOn = !!business().requested_visits;
+          if (!requestedOn) j.origin = 'door';
+          if (!j.request) j.request = {};
+          const firstDate = () => PJ.isRequested(j) ? today : PJ.firstScheduleDate(today);
+          const choiceGroup = (parent, opts, isOn, onPick) => {
+            const box = el('div', 'timing');
+            const btns = opts.map(([key, title, sub]) => {
+              const b = el('button', 'plain choice', '');
+              b.type = 'button';
+              b.append(el('b', '', title), el('span', '', sub));
+              b.onclick = () => onPick(key);
+              box.appendChild(b);
+              return [key, b];
+            });
+            parent.appendChild(box);
+            return () => btns.forEach(([key, b]) => b.classList.toggle('on', isOn(key)));
           };
-          const bNow = pick('now', 'Today, at the customer’s request', 'Do the work now. They can still cancel and get a full refund.');
-          const bLater = pick('scheduled', 'Schedule after the cancel period', 'First open day: ' + PJ.longDate(first) + '.');
-          d.append(choices, when);
-          let dateField = null;
-          const drawWhen = () => {
-            bNow.classList.toggle('on', j.timing === 'now');
-            bLater.classList.toggle('on', j.timing === 'scheduled');
-            when.innerHTML = '';
-            dateField = null;
-            if (j.timing === 'now') { j.service_date = today; j.service_window = ''; }
-            if (j.timing !== 'scheduled') return;
-            if (!(j.service_date >= first)) j.service_date = first;
-            dateField = input(when, 'Scheduled date', j.service_date, { type: 'date', onInput: v => { j.service_date = v; showLoad(); } });
-            dateField.min = first;
-            const load = el('p', 'tip', '');
-            when.appendChild(load);
-            const showLoad = () => {
-              const n = [...jobs.values()].filter(x => live(x) && x.id !== j.id && x.service_date === j.service_date && ['signed', 'inspecting'].includes(x.status)).length;
-              load.textContent = !PJ.parseYmd(j.service_date) ? '' : n ? 'The crew already has ' + n + (n === 1 ? ' job' : ' jobs') + ' that day.' : 'No other crew jobs that day yet.';
+          // ---- how the job started (only when the owner turned on customer-requested visits)
+          if (requestedOn) {
+            const o = card(body, 'How did this job start?');
+            o.appendChild(el('p', 'tip', 'This decides whether the customer gets the 3-day right to cancel.'));
+            const styleOrigin = choiceGroup(o, [
+              ['door', 'We knocked or met them', 'They get the 3-day right to cancel.'],
+              ['customer_request', 'They contacted us and asked us to come', 'Only for the service they asked for. No 3-day right for that visit.'],
+            ], key => j.origin === key, key => { j.origin = key; drawOrigin(); drawTiming(); });
+            const how = el('div', '');
+            o.appendChild(how);
+            var drawOrigin = () => {
+              styleOrigin();
+              how.innerHTML = '';
+              if (!PJ.isRequested(j)) return;
+              if (!j.request.date) j.request.date = today;
+              const rd = input(how, 'Date they contacted us', j.request.date, { type: 'date', onInput: v => { j.request.date = v; } });
+              rd.max = today;
+              how.reqDate = rd;
+              select(how, 'How they contacted us', [''].concat(PJ.REQUEST_METHODS), j.request.method || '', v => { j.request.method = v; });
+              how.appendChild(el('p', 'tip warn', 'Only the service they asked for goes on this job. If you sell anything extra during the visit, start a separate job for it: extra sales keep the 3-day right to cancel.'));
             };
-            showLoad();
-            select(when, 'Time of day', WINDOWS, j.service_window || 'Any time', v => { j.service_window = v === 'Any time' ? '' : v; });
-            const url = business().booking_url;
-            if (url) {
-              const a = el('a', 'plain', 'Check open dates on the website');
-              a.href = url; a.target = '_blank'; a.rel = 'noopener';
-              when.appendChild(a);
-            }
+            drawOrigin();
+            var originCheck = () => {
+              if (j.origin !== 'door' && j.origin !== 'customer_request') { toast('Choose how this job started.', true); return false; }
+              if (!PJ.isRequested(j)) return true;
+              if (!PJ.parseYmd(j.request.date) || j.request.date > today) { how.reqDate.showError('Enter the date they contacted you.'); return false; }
+              if (!j.request.method) { toast('Choose how the customer contacted you.', true); return false; }
+              return true;
+            };
+          }
+          // ---- when the work happens
+          const d = card(body, 'When will the work be done?');
+          const tip = el('p', 'tip', '');
+          d.appendChild(tip);
+          const choiceBox = el('div', '');
+          const when = el('div', '');
+          d.append(choiceBox, when);
+          let dateField = null;
+          const drawTiming = () => {
+            const req = PJ.isRequested(j);
+            tip.textContent = req ? 'Ask the customer which they prefer.'
+              : 'Ask the customer which they prefer. They can cancel until midnight of ' + PJ.longDate(PJ.cancelBy(today)) + ' either way.';
+            choiceBox.innerHTML = '';
+            const style = choiceGroup(choiceBox, req
+              ? [['now', 'Today', 'Do the work now.'], ['scheduled', 'Schedule a date', 'Any day that works for them.']]
+              : [['now', 'Today, at the customer’s request', 'Do the work now. They can still cancel and get a full refund.'],
+                 ['scheduled', 'Schedule after the cancel period', 'First open day: ' + PJ.longDate(PJ.firstScheduleDate(today)) + '.']],
+              key => j.timing === key, key => { j.timing = key; drawWhen(); });
+            drawWhen = () => {
+              style();
+              when.innerHTML = '';
+              dateField = null;
+              if (j.timing === 'now') { j.service_date = today; j.service_window = ''; }
+              if (j.timing !== 'scheduled') return;
+              const first = firstDate();
+              if (!(j.service_date >= first)) j.service_date = first;
+              dateField = input(when, 'Scheduled date', j.service_date, { type: 'date', onInput: v => { j.service_date = v; showLoad(); } });
+              dateField.min = first;
+              const load = el('p', 'tip', '');
+              when.appendChild(load);
+              const showLoad = () => {
+                const n = [...jobs.values()].filter(x => live(x) && x.id !== j.id && x.service_date === j.service_date && ['signed', 'inspecting'].includes(x.status)).length;
+                load.textContent = !PJ.parseYmd(j.service_date) ? '' : n ? 'The crew already has ' + n + (n === 1 ? ' job' : ' jobs') + ' that day.' : 'No other crew jobs that day yet.';
+              };
+              showLoad();
+              select(when, 'Time of day', WINDOWS, j.service_window || 'Any time', v => { j.service_window = v === 'Any time' ? '' : v; });
+              const url = business().booking_url;
+              if (url) {
+                const a = el('a', 'plain', 'Check open dates on the website');
+                a.href = url; a.target = '_blank'; a.rel = 'noopener';
+                when.appendChild(a);
+              }
+            };
+            drawWhen();
           };
-          drawWhen();
+          let drawWhen = () => {};
+          drawTiming();
           input(d, 'Notes about this customer (optional)', c.notes, { multi: true, rows: 2, max: 2000, onInput: v => { c.notes = v; } });
           foot.appendChild(button('Next: services & price', 'primary big', () => {
             if (!c.first_name.trim()) return f.showError('Enter the first name.');
@@ -361,8 +412,9 @@
             if (!c.city.trim()) return ci.showError('Enter the city.');
             if (c.zip && !/^\d{5}(-\d{4})?$/.test(c.zip.trim())) return zp.showError('ZIP should be 5 digits.');
             if (!c.phone.trim() && !c.email.trim()) return ph.showError('Add a phone number or email so you can reach them.');
+            if (requestedOn && !originCheck()) return;
             if (j.timing !== 'now' && j.timing !== 'scheduled') { toast('Choose when the work will be done.', true); return; }
-            if (j.timing === 'scheduled' && !(PJ.parseYmd(j.service_date) && j.service_date >= first)) return dateField.showError('Pick a date on or after ' + PJ.longDate(first) + '.');
+            if (j.timing === 'scheduled' && !(PJ.parseYmd(j.service_date) && j.service_date >= firstDate())) return dateField.showError('Pick a date on or after ' + PJ.longDate(firstDate()) + '.');
             persist().then(() => go(1));
           }));
         },
@@ -456,8 +508,9 @@
       });
     }
 
-    let oral = false, ack = false, timingOk = false;
+    let oral = false, ack = false, timingOk = false, requestOk = false;
     function stepReview() {
+      oral = ack = timingOk = requestOk = false;
       const version = agreementsFor(j.id).length + 1;
       const r = PJ.renderAgreement(ctxFor(c, j, version, PJ.ymd(new Date())));
       openPage({
@@ -466,10 +519,13 @@
           const doc = el('div', 'doc');
           renderDocHtml(doc, r.text, T.right_to_cancel);
           body.appendChild(doc);
-          const n = el('div', 'doc notice');
-          r.notice.forEach((line, i) => n.appendChild(el(i === 0 ? 'h4' : 'p', '', line)));
-          n.appendChild(el('p', 'small', 'The customer gets two copies of this notice with the signed agreement.'));
-          body.appendChild(n);
+          if (r.notice.length) {
+            const n = el('div', 'doc notice');
+            r.notice.forEach((line, i) => n.appendChild(el(i === 0 ? 'h4' : 'p', '', line)));
+            n.appendChild(el('p', 'small', 'The customer gets two copies of this notice with the signed agreement.'));
+            body.appendChild(n);
+          }
+          const R = r.requested ? T.requested : null;
           const k = card(body, 'Before signing');
           const tick = (text, val, set) => {
             const l = el('label', 'tick');
@@ -478,15 +534,17 @@
             l.append(cb, el('span', '', text));
             k.appendChild(l);
           };
-          tick('Technician: ' + T.technician_oral_notice, oral, v => { oral = v; });
+          tick(R ? PJ.fill(R.technician_tick, r.vars) : 'Technician: ' + T.technician_oral_notice, oral, v => { oral = v; });
           tick('Customer: I have read the whole agreement and the total price of ' + PJ.money(r.total_cents) + '.', ack, v => { ack = v; });
-          if (T.timing && (j.timing === 'now' || j.timing === 'scheduled')) tick(PJ.fill(T.timing[j.timing + '_customer_tick'], r.vars), timingOk, v => { timingOk = v; });
+          if (R) tick(PJ.fill(R.customer_tick, r.vars), requestOk, v => { requestOk = v; });
+          if (T.timing && (j.timing === 'now' || j.timing === 'scheduled')) tick(PJ.fill((R || T.timing)[j.timing + '_customer_tick'], r.vars), timingOk, v => { timingOk = v; });
           const tb = el('div', 'total-bar');
           tb.append(el('span', '', 'Total to be agreed'), el('b', '', PJ.money(r.total_cents)));
           foot.appendChild(tb);
           foot.appendChild(button('Next: customer signs', 'primary big', () => {
-            if (!oral) { toast('Tell the customer about their 3-day right to cancel, then tick the box.', true); return; }
+            if (!oral) { toast(R ? 'Confirm the customer asked for this visit, then tick the box.' : 'Tell the customer about their 3-day right to cancel, then tick the box.', true); return; }
             if (!ack) { toast('The customer needs to confirm they read the agreement.', true); return; }
+            if (R && !requestOk) { toast('The customer needs to confirm they asked for this visit.', true); return; }
             if (T.timing && (j.timing === 'now' || j.timing === 'scheduled') && !timingOk) { toast('The customer needs to confirm when the work will be done.', true); return; }
             go(3);
           }));
@@ -501,7 +559,7 @@
           const tot = PJ.totals(j.services, j.adjustments).total;
           const k = card(body);
           k.appendChild(el('p', 'sign-lead', 'By signing, ' + (PJ.fullName(c) || 'the customer') + ' agrees to the work and the total price of ' + PJ.money(tot) + '.'));
-          k.appendChild(el('p', 'rtc', T.right_to_cancel));
+          if (!PJ.isRequested(j)) k.appendChild(el('p', 'rtc', T.right_to_cancel));
           const name = input(k, 'Printed name', PJ.fullName(c), { required: true, max: 120, caps: 'words' });
           const pad = signaturePad();
           k.appendChild(pad.el);
@@ -528,7 +586,8 @@
     }
 
     if (isNewCustomer) saved = false;
-    if (step > 0 && j.timing !== 'now' && j.timing !== 'scheduled') step = 0;   // when the work happens is chosen in step 1
+    if (step > 0 && j.timing !== 'now' && j.timing !== 'scheduled') step = 0;
+    if (step > 0 && business().requested_visits && j.origin !== 'door' && j.origin !== 'customer_request') step = 0;   // when the work happens is chosen in step 1
     go(step);
   }
 
@@ -657,8 +716,10 @@
     const version = (prior.length ? prior[prior.length - 1].version : 0) + 1;
     const tx = PJ.ymd(new Date());
     if (j.timing === 'now') { j.service_date = tx; j.service_window = ''; }
-    if (j.timing === 'scheduled' && !(j.service_date >= PJ.firstScheduleDate(tx)))
-      throw new Error('The scheduled date must be on or after ' + PJ.longDate(PJ.firstScheduleDate(tx)) + '. Go back to step 1 and pick a new date.');
+    const minDate = PJ.isRequested(j) ? tx : PJ.firstScheduleDate(tx);
+    if (j.timing === 'scheduled' && !(j.service_date >= minDate))
+      throw new Error('The scheduled date must be on or after ' + PJ.longDate(minDate) + '. Go back to step 1 and pick a new date.');
+    if (PJ.isRequested(j) && !business().requested_visits) throw new Error('Customer-requested visits are turned off in Settings. Go back to step 1 and choose how the job started.');
     const ctx = ctxFor(c, j, version, tx);
     const r = PJ.renderAgreement(ctx);
     const hash = await sha256(r.text);
@@ -669,7 +730,8 @@
     const doc = {
       template: T.template, agreement_no: ctx.agreement_no, transaction_date: tx, business: ctx.business,
       customer: { first_name: c.first_name, last_name: c.last_name, street: c.street, city: c.city, state: c.state, zip: c.zip, phone: c.phone, email: c.email },
-      service_date: j.service_date, timing: j.timing || '', service_window: j.service_window || '', services: j.services, adjustments: j.adjustments, technician: ctx.technician, notice: r.notice,
+      service_date: j.service_date, timing: j.timing || '', service_window: j.service_window || '',
+      origin: j.origin || 'door', request: PJ.isRequested(j) ? { date: j.request.date, method: j.request.method } : {}, services: j.services, adjustments: j.adjustments, technician: ctx.technician, notice: r.notice,
     };
     const a = { id, job_id: j.id, customer_id: c.id, version, document: doc, document_text: r.text, document_sha256: hash, total_cents: r.total_cents,
       signer_name: signerName, signed_at: signedAt, signed_tz: Intl.DateTimeFormat().resolvedOptions().timeZone || '', cancel_by: r.cancel_by,
@@ -681,7 +743,8 @@
     agreements.set(id, a);
     await Store.putRows('agreements', [a]);
     const job = Object.assign({}, jobs.get(j.id) || j, { status: 'signed', agreement_id: id, total_cents: r.total_cents, technician: ctx.technician,
-      timing: j.timing || '', service_date: j.service_date, service_window: j.service_window || '' });
+      timing: j.timing || '', service_date: j.service_date, service_window: j.service_window || '',
+      origin: j.origin || 'door', request: PJ.isRequested(j) ? { date: j.request.date, method: j.request.method } : {} });
     await saveJob(job);
     markDoor(job, c, 'BOOKED');
     Sync.soon();
@@ -708,11 +771,13 @@
         k.appendChild(el('div', 'bigcheck', '✓'));
         k.appendChild(el('h3', 'center', 'Signed and saved'));
         k.appendChild(el('p', 'center', a.document.agreement_no + ' · Version ' + a.version + ' · ' + PJ.money(a.total_cents)));
-        k.appendChild(el('p', 'center muted', 'Signed by ' + a.signer_name + ' on ' + A.fmtDate(a.signed_at) + '. The customer can cancel until midnight of ' + PJ.longDate(a.cancel_by) + '.'));
+        k.appendChild(el('p', 'center muted', 'Signed by ' + a.signer_name + ' on ' + A.fmtDate(a.signed_at) + '. ' + (a.cancel_by
+          ? 'The customer can cancel until midnight of ' + PJ.longDate(a.cancel_by) + '.' : 'Visit requested by the customer: no 3-day cancellation period.')));
         const r = row(k);
         r.appendChild(button('View PDF', '', () => viewFile(a.pdf_path, a.document.agreement_no + '.pdf')));
         r.appendChild(button('Send customer their copy', '', () => shareFile(a.pdf_path, 'Prairie Lint Patrol agreement ' + a.document.agreement_no + '.pdf', 'Your signed Prairie Lint Patrol service agreement', c)));
-        body.appendChild(el('p', 'tip', 'Give the customer their copy now (share, email, or text it). It includes the two Notice of Cancellation forms.'));
+        body.appendChild(el('p', 'tip', a.cancel_by ? 'Give the customer their copy now (share, email, or text it). It includes the two Notice of Cancellation forms.'
+          : 'Give the customer their copy now (share, email, or text it).'));
         if (j.timing === 'scheduled') {
           const s = card(body, 'Scheduled');
           s.appendChild(el('p', 'big', PJ.longDate(j.service_date) + (j.service_window ? ', ' + j.service_window.toLowerCase() : '')));
@@ -802,12 +867,12 @@
     d.setFont('helvetica', 'normal'); d.setFontSize(9.5); d.setTextColor(...PDF_INK);
     d.text(d.splitTextToSize(A.fmtDate(a.signed_at) + (a.signed_tz ? ' (' + a.signed_tz + ')' : ''), 200), 350, st.y + 32);
     d.text('Total agreed: ' + PJ.money(a.total_cents), 350, st.y + 62);
-    d.text('Cancel by: midnight, ' + PJ.longDate(a.cancel_by), 350, st.y + 78);
+    d.text(a.cancel_by ? 'Cancel by: midnight, ' + PJ.longDate(a.cancel_by) : 'Visit requested by the customer', 350, st.y + 78);
     st.y += 140;
     pdfText(st, 'Document fingerprint (SHA-256): ' + a.document_sha256, { size: 7.5, color: PDF_MUTED, after: 2 });
     pdfText(st, 'This record cannot be changed after signing. Any change requires a new signed version.', { size: 7.5, color: PDF_MUTED });
     // two copies of the Notice of Cancellation, each on its own page
-    for (let copy = 1; copy <= 2; copy++) {
+    for (let copy = 1; copy <= ((doc.notice || []).length ? 2 : 0); copy++) {
       pdfPage(st);
       pdfText(st, 'Copy ' + copy + ' of 2  •  ' + (copy === 1 ? 'Keep this copy' : 'Use this copy to cancel'), { size: 9, color: PDF_MUTED, after: 10 });
       doc.notice.forEach((ln, i) => {
@@ -1185,7 +1250,7 @@
               wizard(c, d, 1, false);
             } }])));
         }
-        if (j.status !== 'cancelled' && list.length) {
+        if (j.status !== 'cancelled' && list.some(a => a.cancel_by)) {
           more.appendChild(button('Customer cancelled (within 3 business days)', 'danger', () => dialog('Mark this job cancelled?',
             'Refund any payment within 10 business days of receiving their notice, as the agreement says.',
             [{ label: 'Keep job' }, { label: 'Mark cancelled', cls: 'danger', run: () => saveJob(Object.assign({}, jobs.get(j.id), { status: 'cancelled' })).then(() => openJob(j.id)) }])));
@@ -1221,6 +1286,13 @@
         input(k, 'Phone', v.phone, { half: true, onInput: x => { v.phone = x; } });
         input(k, 'Email', v.email, { half: true, onInput: x => { v.email = x.trim(); } });
         input(k, 'Website', v.website, { half: true, onInput: x => { v.website = x.trim(); } });
+        const rv = card(body, 'Customer-requested visits');
+        rv.appendChild(el('p', 'tip', 'When on, new jobs ask how the job started. If the customer contacted you and asked you to come, that agreement has no 3-day cancellation period. Turn this on only after your attorney has approved the wording.'));
+        const rvl = el('label', 'tick');
+        const rvc = el('input'); rvc.type = 'checkbox'; rvc.checked = !!v.requested_visits;
+        rvc.onchange = () => { v.requested_visits = rvc.checked; };
+        rvl.append(rvc, el('span', '', 'Allow customer-requested visits (attorney approved)'));
+        rv.appendChild(rvl);
         input(k, 'Online booking page (shown when scheduling)', v.booking_url, { type: 'url', caps: 'off', onInput: x => { v.booking_url = x.trim(); } });
         input(k, 'Payment terms', v.payment_terms, { multi: true, rows: 2, onInput: x => { v.payment_terms = x; } });
         const s = card(body, 'Standard services and prices');

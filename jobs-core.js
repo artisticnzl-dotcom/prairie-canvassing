@@ -6,7 +6,7 @@
 
   const DEFAULT_BUSINESS = {
     name: 'Prairie Lint Patrol', street: '506 Clover Ln', city: 'Hesston', state: 'KS', zip: '67062',
-    phone: '620-869-1692', email: 'prairielintpatrol@gmail.com', website: 'PrairieLintPatrol.com', booking_url: 'https://prairielintpatrol.com/#book',
+    phone: '620-869-1692', email: 'prairielintpatrol@gmail.com', website: 'PrairieLintPatrol.com', booking_url: 'https://prairielintpatrol.com/#book', requested_visits: false,
     payment_terms: 'Payment is due when the work is completed. We accept check, card, or ACH bank transfer.',
     services: [
       { name: 'Standard Dryer Vent Cleaning', description: 'Clean the dryer vent line from the dryer connection to the exterior termination, where accessible.', price_cents: 14900, default: true },
@@ -101,8 +101,15 @@
    * The exact agreement a customer reviews and signs. Same input → same text on every device.
    * ctx: {template, business, customer, job, version, agreement_no, transaction_date, technician}
    */
+  const REQUEST_METHODS = ['Phone call', 'Text message', 'Website booking', 'Email', 'Social media message', 'Other'];
+  /** True when the customer asked us to come (no 3-day right for that requested maintenance visit). */
+  function isRequested(j) { return !!j && j.origin === 'customer_request'; }
+  function requestMethodText(m) { return !m || m === 'Other' ? 'another method' : String(m).toLowerCase(); }
+
   function renderAgreement(ctx) {
     const t = ctx.template, b = ctx.business, c = ctx.customer, j = ctx.job;
+    const req = isRequested(j) && t.requested ? t.requested : null;
+    const rq = j.request || {};
     const tot = totals(j.services, j.adjustments);
     const cancel = cancelBy(ctx.transaction_date);
     const vars = {
@@ -111,6 +118,7 @@
       seller_address: businessAddress(b).toUpperCase(), cancel_by: longDate(cancel).toUpperCase(),
       cancel_by_date: longDate(cancel), service_date: longDate(j.service_date),
       service_window: j.service_window ? ', ' + String(j.service_window).toLowerCase() : '',
+      request_date: rq.date ? longDate(rq.date) : '', request_method: requestMethodText(rq.method),
     };
     const L = [];
     L.push(b.name.toUpperCase() + ' — ' + t.title.toUpperCase());
@@ -137,18 +145,20 @@
     }
     L.push('TOTAL PRICE: ' + money(tot.total));
     L.push('');
-    for (const s of t.sections) { L.push(s.heading.toUpperCase()); L.push(fill(s.text, vars)); L.push(''); }
-    if (t.timing && (j.timing === 'now' || j.timing === 'scheduled')) {
-      L.push(t.timing.heading.toUpperCase()); L.push(fill(t.timing[j.timing], vars)); L.push('');
+    for (const s0 of t.sections) {
+      const s = req && s0.id === 'cancel' ? req.section : s0;
+      L.push(s.heading.toUpperCase()); L.push(fill(s.text, vars)); L.push('');
     }
-    L.push(fill(t.acknowledgment, vars));
+    if (t.timing && (j.timing === 'now' || j.timing === 'scheduled')) {
+      L.push(t.timing.heading.toUpperCase()); L.push(fill((req || t.timing)[j.timing], vars)); L.push('');
+    }
+    L.push(fill(req ? req.acknowledgment : t.acknowledgment, vars));
     L.push('');
-    L.push(t.right_to_cancel);
-    L.push('');
+    if (!req) { L.push(t.right_to_cancel); L.push(''); }
     L.push('Technician: ' + (ctx.technician || ''));
     const text = L.join('\n');
-    const notice = t.notice.map(x => fill(x, vars));
-    return { text, notice, cancel_by: cancel, total_cents: tot.total, vars };
+    const notice = req ? [] : t.notice.map(x => fill(x, vars));
+    return { text, notice, cancel_by: req ? '' : cancel, total_cents: tot.total, vars, requested: !!req };
   }
 
   /** Short human-friendly agreement number, e.g. PLP-20261114-7F3A. */
@@ -161,7 +171,7 @@
     const d = parseYmd(cancelBy(transactionYmd)); d.setDate(d.getDate() + 1); return ymd(d);
   }
 
-  const api = { firstScheduleDate, DEFAULT_BUSINESS, MONTHS, money, parseMoney, lineCents, totals, ymd, parseYmd, longDate, holidays, isBusinessDay,
+  const api = { REQUEST_METHODS, isRequested, requestMethodText, firstScheduleDate, DEFAULT_BUSINESS, MONTHS, money, parseMoney, lineCents, totals, ymd, parseYmd, longDate, holidays, isBusinessDay,
     cancelBy, fill, cityLine, fullName, serviceAddress, businessAddress, renderAgreement, agreementNo };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.PJ = api;
 })(typeof self !== 'undefined' ? self : this);
