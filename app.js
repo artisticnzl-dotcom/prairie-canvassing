@@ -316,10 +316,15 @@
       for (let i = 0; i < dirty.length; i += 200) {
         const part = dirty.slice(i, i + 200);
         const body = part.map(v => { const o = {}; for (const k of Object.keys(v)) if (k !== 'dirty' && k[0] !== '_') o[k] = v[k]; return o; });
-        await this.rest(t.name + '?on_conflict=id', {
-          method: 'POST', headers: { Prefer: (t.insertOnly ? 'resolution=ignore-duplicates' : 'resolution=merge-duplicates') + ',return=minimal' },
-          body: JSON.stringify(body),
-        });
+        // The server needs every row in one upload to have the same fields (older rows can lack newer ones).
+        const groups = new Map();
+        for (const o of body) { const sig = Object.keys(o).sort().join(','); if (!groups.has(sig)) groups.set(sig, []); groups.get(sig).push(o); }
+        for (const g of groups.values()) {
+          await this.rest(t.name + '?on_conflict=id', {
+            method: 'POST', headers: { Prefer: (t.insertOnly ? 'resolution=ignore-duplicates' : 'resolution=merge-duplicates') + ',return=minimal' },
+            body: JSON.stringify(g),
+          });
+        }
         const clean = [];
         for (const v of part) {
           const cur = t.map.get(v.id);
