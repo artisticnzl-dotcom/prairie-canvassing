@@ -72,6 +72,18 @@
   function jobForDoor(doorId) {
     return [...jobs.values()].find(j => live(j) && j.door_id === doorId && j.status !== 'cancelled') || null;
   }
+  const WINDOWS = ['Any time', 'Morning', 'Afternoon', 'Evening'];
+  function jobWhen(j) {
+    const d = PJ.longDate(j.service_date) + (j.service_window ? ', ' + j.service_window.toLowerCase() : '');
+    if (j.status === 'signed' && j.timing === 'scheduled') return 'Scheduled · ' + d;
+    if (j.status === 'signed' && j.timing === 'now') return 'Signed — doing the work today · ' + d;
+    return STATUS[j.status] + ' · ' + d;
+  }
+  /** The newest signed agreement's cancel deadline, or '' if none. */
+  function cancelDeadline(j) {
+    const list = agreementsFor(j.id);
+    return list.length ? list[list.length - 1].cancel_by : '';
+  }
   function serviceSummary(j) {
     return (j.services || []).map(s => s.name + ((s.qty || 1) > 1 ? ' ×' + s.qty : '')).join(', ') || 'No services yet';
   }
@@ -176,12 +188,12 @@
 
     // Unfinished work first, so nothing gets lost
     const open = [...jobs.values()].filter(j => live(j) && ['draft', 'signed', 'inspecting'].includes(j.status) && live(customers.get(j.customer_id)))
-      .sort((a, b) => b.updated_at - a.updated_at);
+      .sort((a, b) => (a.status === 'draft') - (b.status === 'draft') || (a.service_date || '').localeCompare(b.service_date || '') || b.updated_at - a.updated_at);
     if (open.length && !customerQuery) {
       list.appendChild(el('div', 'day', 'Jobs in progress'));
       for (const j of open.slice(0, 10)) {
         const c = customers.get(j.customer_id);
-        list.appendChild(listRow(PJ.fullName(c) || 'Unnamed customer', STATUS[j.status] + ' · ' + PJ.longDate(j.service_date), PJ.money(j.total_cents || PJ.totals(j.services, j.adjustments).total), () => continueJob(j)));
+        list.appendChild(listRow(PJ.fullName(c) || 'Unnamed customer', jobWhen(j), PJ.money(j.total_cents || PJ.totals(j.services, j.adjustments).total), () => continueJob(j)));
       }
     }
     const words = customerQuery.toLowerCase().split(/\s+/).filter(Boolean);
@@ -255,7 +267,7 @@
   function continueJob(j) {
     const c = customers.get(j.customer_id);
     if (!c) { toast('This job’s customer hasn’t synced to this phone yet.', true); return; }
-    if (j.status === 'draft') wizard(c, j, j.services && j.services.length && c.first_name ? 1 : 0, false);
+    if (j.status === 'draft') wizard(c, j, j.services && j.services.length && c.first_name && j.timing ? 1 : 0, false);
     else if (j.status === 'signed' || j.status === 'inspecting') inspection(j.id);
     else openJob(j.id);
   }
@@ -284,7 +296,7 @@
 
     function stepCustomer() {
       openPage({
-        title: 'New job', kicker: 'Step 1 of 4', steps: { list: STEPS, at: 0 }, back: leave,
+        title: isNewCustomer ? 'New job' : (PJ.fullName(c) || 'New job'), kicker: 'Step 1 of 4', steps: { list: STEPS, at: 0 }, back: leave,
         render(body, foot) {
           const k = card(body, 'Customer');
           const f = input(k, 'First name', c.first_name, { required: true, auto: 'given-name', caps: 'words', max: 80, half: true, onInput: v => { c.first_name = v; } });
@@ -296,8 +308,50 @@
           const ci = input(a, 'City', c.city, { required: true, auto: 'address-level2', caps: 'words', max: 80, half: true, onInput: v => { c.city = v; } });
           input(a, 'State', c.state, { max: 2, caps: 'characters', half: true, onInput: v => { c.state = v.toUpperCase(); } }).classList.add('short');
           const zp = input(a, 'ZIP', c.zip, { mode: 'numeric', max: 10, half: true, onInput: v => { c.zip = v; } });
-          const d = card(body, 'Service date');
-          input(d, 'Date of service', j.service_date, { type: 'date', onInput: v => { j.service_date = v; } });
+          const today = PJ.ymd(new Date());
+          const first = PJ.firstScheduleDate(today);
+          const d = card(body, 'When will the work be done?');
+          d.appendChild(el('p', 'tip', 'Ask the customer which they prefer. They can cancel until midnight of ' + PJ.longDate(PJ.cancelBy(today)) + ' either way.'));
+          const choices = el('div', 'timing');
+          const when = el('div', '');
+          const pick = (key, title, sub) => {
+            const b = el('button', 'plain choice', '');
+            b.type = 'button';
+            b.append(el('b', '', title), el('span', '', sub));
+            b.onclick = () => { j.timing = key; drawWhen(); };
+            choices.appendChild(b);
+            return b;
+          };
+          const bNow = pick('now', 'Today, at the customer’s request', 'Do the work now. They can still cancel and get a full refund.');
+          const bLater = pick('scheduled', 'Schedule after the cancel period', 'First open day: ' + PJ.longDate(first) + '.');
+          d.append(choices, when);
+          let dateField = null;
+          const drawWhen = () => {
+            bNow.classList.toggle('on', j.timing === 'now');
+            bLater.classList.toggle('on', j.timing === 'scheduled');
+            when.innerHTML = '';
+            dateField = null;
+            if (j.timing === 'now') { j.service_date = today; j.service_window = ''; }
+            if (j.timing !== 'scheduled') return;
+            if (!(j.service_date >= first)) j.service_date = first;
+            dateField = input(when, 'Scheduled date', j.service_date, { type: 'date', onInput: v => { j.service_date = v; showLoad(); } });
+            dateField.min = first;
+            const load = el('p', 'tip', '');
+            when.appendChild(load);
+            const showLoad = () => {
+              const n = [...jobs.values()].filter(x => live(x) && x.id !== j.id && x.service_date === j.service_date && ['signed', 'inspecting'].includes(x.status)).length;
+              load.textContent = !PJ.parseYmd(j.service_date) ? '' : n ? 'The crew already has ' + n + (n === 1 ? ' job' : ' jobs') + ' that day.' : 'No other crew jobs that day yet.';
+            };
+            showLoad();
+            select(when, 'Time of day', WINDOWS, j.service_window || 'Any time', v => { j.service_window = v === 'Any time' ? '' : v; });
+            const url = business().booking_url;
+            if (url) {
+              const a = el('a', 'plain', 'Check open dates on the website');
+              a.href = url; a.target = '_blank'; a.rel = 'noopener';
+              when.appendChild(a);
+            }
+          };
+          drawWhen();
           input(d, 'Notes about this customer (optional)', c.notes, { multi: true, rows: 2, max: 2000, onInput: v => { c.notes = v; } });
           foot.appendChild(button('Next: services & price', 'primary big', () => {
             if (!c.first_name.trim()) return f.showError('Enter the first name.');
@@ -307,7 +361,8 @@
             if (!c.city.trim()) return ci.showError('Enter the city.');
             if (c.zip && !/^\d{5}(-\d{4})?$/.test(c.zip.trim())) return zp.showError('ZIP should be 5 digits.');
             if (!c.phone.trim() && !c.email.trim()) return ph.showError('Add a phone number or email so you can reach them.');
-            if (!PJ.parseYmd(j.service_date)) j.service_date = PJ.ymd(new Date());
+            if (j.timing !== 'now' && j.timing !== 'scheduled') { toast('Choose when the work will be done.', true); return; }
+            if (j.timing === 'scheduled' && !(PJ.parseYmd(j.service_date) && j.service_date >= first)) return dateField.showError('Pick a date on or after ' + PJ.longDate(first) + '.');
             persist().then(() => go(1));
           }));
         },
@@ -401,7 +456,7 @@
       });
     }
 
-    let oral = false, ack = false;
+    let oral = false, ack = false, timingOk = false;
     function stepReview() {
       const version = agreementsFor(j.id).length + 1;
       const r = PJ.renderAgreement(ctxFor(c, j, version, PJ.ymd(new Date())));
@@ -425,12 +480,14 @@
           };
           tick('Technician: ' + T.technician_oral_notice, oral, v => { oral = v; });
           tick('Customer: I have read the whole agreement and the total price of ' + PJ.money(r.total_cents) + '.', ack, v => { ack = v; });
+          if (T.timing && (j.timing === 'now' || j.timing === 'scheduled')) tick(PJ.fill(T.timing[j.timing + '_customer_tick'], r.vars), timingOk, v => { timingOk = v; });
           const tb = el('div', 'total-bar');
           tb.append(el('span', '', 'Total to be agreed'), el('b', '', PJ.money(r.total_cents)));
           foot.appendChild(tb);
           foot.appendChild(button('Next: customer signs', 'primary big', () => {
             if (!oral) { toast('Tell the customer about their 3-day right to cancel, then tick the box.', true); return; }
             if (!ack) { toast('The customer needs to confirm they read the agreement.', true); return; }
+            if (T.timing && (j.timing === 'now' || j.timing === 'scheduled') && !timingOk) { toast('The customer needs to confirm when the work will be done.', true); return; }
             go(3);
           }));
         },
@@ -471,6 +528,7 @@
     }
 
     if (isNewCustomer) saved = false;
+    if (step > 0 && j.timing !== 'now' && j.timing !== 'scheduled') step = 0;   // when the work happens is chosen in step 1
     go(step);
   }
 
@@ -598,6 +656,9 @@
     const prior = agreementsFor(j.id);
     const version = (prior.length ? prior[prior.length - 1].version : 0) + 1;
     const tx = PJ.ymd(new Date());
+    if (j.timing === 'now') { j.service_date = tx; j.service_window = ''; }
+    if (j.timing === 'scheduled' && !(j.service_date >= PJ.firstScheduleDate(tx)))
+      throw new Error('The scheduled date must be on or after ' + PJ.longDate(PJ.firstScheduleDate(tx)) + '. Go back to step 1 and pick a new date.');
     const ctx = ctxFor(c, j, version, tx);
     const r = PJ.renderAgreement(ctx);
     const hash = await sha256(r.text);
@@ -608,7 +669,7 @@
     const doc = {
       template: T.template, agreement_no: ctx.agreement_no, transaction_date: tx, business: ctx.business,
       customer: { first_name: c.first_name, last_name: c.last_name, street: c.street, city: c.city, state: c.state, zip: c.zip, phone: c.phone, email: c.email },
-      service_date: j.service_date, services: j.services, adjustments: j.adjustments, technician: ctx.technician, notice: r.notice,
+      service_date: j.service_date, timing: j.timing || '', service_window: j.service_window || '', services: j.services, adjustments: j.adjustments, technician: ctx.technician, notice: r.notice,
     };
     const a = { id, job_id: j.id, customer_id: c.id, version, document: doc, document_text: r.text, document_sha256: hash, total_cents: r.total_cents,
       signer_name: signerName, signed_at: signedAt, signed_tz: Intl.DateTimeFormat().resolvedOptions().timeZone || '', cancel_by: r.cancel_by,
@@ -619,7 +680,8 @@
     a.dirty = true;
     agreements.set(id, a);
     await Store.putRows('agreements', [a]);
-    const job = Object.assign({}, jobs.get(j.id) || j, { status: 'signed', agreement_id: id, total_cents: r.total_cents, technician: ctx.technician });
+    const job = Object.assign({}, jobs.get(j.id) || j, { status: 'signed', agreement_id: id, total_cents: r.total_cents, technician: ctx.technician,
+      timing: j.timing || '', service_date: j.service_date, service_window: j.service_window || '' });
     await saveJob(job);
     markDoor(job, c, 'BOOKED');
     Sync.soon();
@@ -651,7 +713,14 @@
         r.appendChild(button('View PDF', '', () => viewFile(a.pdf_path, a.document.agreement_no + '.pdf')));
         r.appendChild(button('Send customer their copy', '', () => shareFile(a.pdf_path, 'Prairie Lint Patrol agreement ' + a.document.agreement_no + '.pdf', 'Your signed Prairie Lint Patrol service agreement', c)));
         body.appendChild(el('p', 'tip', 'Give the customer their copy now (share, email, or text it). It includes the two Notice of Cancellation forms.'));
-        foot.appendChild(button('Begin inspection', 'primary big', () => inspection(jobId)));
+        if (j.timing === 'scheduled') {
+          const s = card(body, 'Scheduled');
+          s.appendChild(el('p', 'big', PJ.longDate(j.service_date) + (j.service_window ? ', ' + j.service_window.toLowerCase() : '')));
+          s.appendChild(el('p', 'muted', 'The job is under Customers → Jobs in progress. Add it to your calendar or booking system too.'));
+          foot.appendChild(button('Done', 'primary big', () => { closePage(); A.showTab('customers'); }));
+        } else {
+          foot.appendChild(button('Begin inspection', 'primary big', () => inspection(jobId)));
+        }
       },
     });
   }
@@ -870,9 +939,16 @@
     } finally { URL.revokeObjectURL(url); }
   }
 
-  function inspection(jobId) {
+  function inspection(jobId, confirmed) {
     const j0 = jobs.get(jobId);
     const c = customers.get(j0.customer_id);
+    const deadline = cancelDeadline(j0);
+    if (!confirmed && j0.status === 'signed' && j0.timing === 'scheduled' && deadline && PJ.ymd(new Date()) <= deadline) {
+      dialog('Start before the scheduled date?', 'This job is scheduled for ' + PJ.longDate(j0.service_date) + ', after the customer’s cancel period. Their cancel period runs until midnight of ' +
+        PJ.longDate(deadline) + '. Only start now if the customer asks you to. They can still cancel and get a full refund.',
+        [{ label: 'Wait' }, { label: 'Customer asked — start now', run: () => inspection(jobId, true) }]);
+      return;
+    }
     let timer = 0;
     const j = Object.assign({}, j0, { inspection: Object.assign({}, j0.inspection || {}), photos: (j0.photos || []).slice() });
     if (j.status === 'signed') j.status = 'inspecting';
@@ -990,6 +1066,9 @@
 
   function paymentCard(body, j) {
     const p = card(body, 'Payment');
+    const deadline = cancelDeadline(j);
+    if (deadline && j.status !== 'cancelled' && PJ.ymd(new Date()) <= deadline)
+      p.appendChild(el('p', 'tip warn', 'The customer can cancel until midnight of ' + PJ.longDate(deadline) + '. If they do, refund every payment within 10 business days. You may prefer to collect payment after that date.'));
     select(p, 'Status', Object.values(PAYMENT), PAYMENT[j.payment_status] || 'Unpaid', v => {
       const key = Object.keys(PAYMENT).find(k => PAYMENT[k] === v);
       saveJob(Object.assign({}, jobs.get(j.id), { payment_status: key }));
@@ -1142,6 +1221,7 @@
         input(k, 'Phone', v.phone, { half: true, onInput: x => { v.phone = x; } });
         input(k, 'Email', v.email, { half: true, onInput: x => { v.email = x.trim(); } });
         input(k, 'Website', v.website, { half: true, onInput: x => { v.website = x.trim(); } });
+        input(k, 'Online booking page (shown when scheduling)', v.booking_url, { type: 'url', caps: 'off', onInput: x => { v.booking_url = x.trim(); } });
         input(k, 'Payment terms', v.payment_terms, { multi: true, rows: 2, onInput: x => { v.payment_terms = x; } });
         const s = card(body, 'Standard services and prices');
         v.services.forEach(svc => {

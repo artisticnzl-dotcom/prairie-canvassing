@@ -6,7 +6,7 @@
 
   const DEFAULT_BUSINESS = {
     name: 'Prairie Lint Patrol', street: '506 Clover Ln', city: 'Hesston', state: 'KS', zip: '67062',
-    phone: '620-869-1692', email: 'prairielintpatrol@gmail.com', website: 'PrairieLintPatrol.com',
+    phone: '620-869-1692', email: 'prairielintpatrol@gmail.com', website: 'PrairieLintPatrol.com', booking_url: 'https://prairielintpatrol.com/#book',
     payment_terms: 'Payment is due when the work is completed. We accept check, card, or ACH bank transfer.',
     services: [
       { name: 'Standard Dryer Vent Cleaning', description: 'Clean the dryer vent line from the dryer connection to the exterior termination, where accessible.', price_cents: 14900, default: true },
@@ -109,6 +109,8 @@
       business_name: b.name, total: money(tot.total), payment_terms: b.payment_terms || '',
       transaction_date: longDate(ctx.transaction_date), seller_name: b.name.toUpperCase(),
       seller_address: businessAddress(b).toUpperCase(), cancel_by: longDate(cancel).toUpperCase(),
+      cancel_by_date: longDate(cancel), service_date: longDate(j.service_date),
+      service_window: j.service_window ? ', ' + String(j.service_window).toLowerCase() : '',
     };
     const L = [];
     L.push(b.name.toUpperCase() + ' — ' + t.title.toUpperCase());
@@ -121,7 +123,7 @@
     const contact = [c.phone ? 'Phone: ' + c.phone : '', c.email ? 'Email: ' + c.email : ''].filter(Boolean).join(' · ');
     if (contact) L.push(contact);
     L.push('Service address: ' + serviceAddress(c));
-    L.push('Service date: ' + longDate(j.service_date));
+    L.push('Service date: ' + longDate(j.service_date) + (j.service_window ? ' (' + String(j.service_window).toLowerCase() + ')' : ''));
     L.push('');
     L.push('SERVICES');
     for (const s of j.services) {
@@ -136,6 +138,9 @@
     L.push('TOTAL PRICE: ' + money(tot.total));
     L.push('');
     for (const s of t.sections) { L.push(s.heading.toUpperCase()); L.push(fill(s.text, vars)); L.push(''); }
+    if (t.timing && (j.timing === 'now' || j.timing === 'scheduled')) {
+      L.push(t.timing.heading.toUpperCase()); L.push(fill(t.timing[j.timing], vars)); L.push('');
+    }
     L.push(fill(t.acknowledgment, vars));
     L.push('');
     L.push(t.right_to_cancel);
@@ -151,7 +156,12 @@
     return 'PLP-' + String(transactionYmd).replace(/-/g, '') + '-' + String(jobId).replace(/-/g, '').slice(0, 4).toUpperCase();
   }
 
-  const api = { DEFAULT_BUSINESS, MONTHS, money, parseMoney, lineCents, totals, ymd, parseYmd, longDate, holidays, isBusinessDay,
+  /** First day work may be scheduled when the customer waits out the cancellation period. */
+  function firstScheduleDate(transactionYmd) {
+    const d = parseYmd(cancelBy(transactionYmd)); d.setDate(d.getDate() + 1); return ymd(d);
+  }
+
+  const api = { firstScheduleDate, DEFAULT_BUSINESS, MONTHS, money, parseMoney, lineCents, totals, ymd, parseYmd, longDate, holidays, isBusinessDay,
     cancelBy, fill, cityLine, fullName, serviceAddress, businessAddress, renderAgreement, agreementNo };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.PJ = api;
 })(typeof self !== 'undefined' ? self : this);
