@@ -68,16 +68,25 @@
 
   // ================================================================ storage on this phone (IndexedDB)
   const Store = {
-    db: null, mem: { visits: new Map(), meta: new Map(), chunks: new Map() },
+    db: null,
+    mem: { visits: new Map(), meta: new Map(), chunks: new Map(), customers: new Map(), jobs: new Map(),
+      agreements: new Map(), settings: new Map(), files: new Map() },
     open() {
       return new Promise(res => {
         let req;
-        try { req = indexedDB.open('prairie-canvassing', 1); } catch (e) { res(false); return; }
-        req.onupgradeneeded = () => {
+        try { req = indexedDB.open('prairie-canvassing', 2); } catch (e) { res(false); return; }
+        req.onupgradeneeded = ev => {
           const d = req.result;
-          d.createObjectStore('visits', { keyPath: 'id' });
-          d.createObjectStore('meta');
-          d.createObjectStore('chunks');
+          if (ev.oldVersion < 1) {
+            d.createObjectStore('visits', { keyPath: 'id' });
+            d.createObjectStore('meta');
+            d.createObjectStore('chunks');
+          }
+          if (ev.oldVersion < 2) {
+            // customers, jobs, signed agreements, shared settings, and photo/PDF files
+            for (const n of ['customers', 'jobs', 'agreements', 'settings']) d.createObjectStore(n, { keyPath: 'id' });
+            d.createObjectStore('files');
+          }
         };
         req.onsuccess = () => { Store.db = req.result; res(true); };
         req.onerror = () => res(false);
@@ -101,6 +110,11 @@
     async set(store, key, val) {
       if (this.db) return this._tx(store, 'readwrite', s => s.put(val, key));
       this.mem[store].set(key, val);
+    },
+    async putRows(store, list) {
+      if (!list.length) return;
+      if (this.db) return this._tx(store, 'readwrite', s => { list.forEach(v => s.put(v)); });
+      list.forEach(v => this.mem[store].set(v.id, v));
     },
     async putVisits(list) {
       if (!list.length) return;
@@ -265,7 +279,98 @@
         await Store.putVisits(clean);
       }
     },
-    waiting() { let n = 0; byId.forEach(v => { if (v.dirty) n++; }); return n; },
+    // Other shared tables (customers, jobs, settings, agreements) register here.
+    tables: [],
+    uploads: [],   // file paths waiting to upload (photos, signatures, PDFs)
+    addTable(t) { this.tables.push(t); },
+    async loadUploads() { this.uploads = (await Store.get('meta', 'uploads')) || []; },
+    async queueUpload(path) {
+      if (this.uploads.indexOf(path) < 0) this.uploads.push(path);
+      await Store.set('meta', 'uploads', this.uploads);
+      this.soon();
+    },
+    async pullTable(t) {
+      const key = 'cursor_' + t.name;
+      const start = (await Store.get('meta', key)) || 0;
+      const since = Math.max(0, start - 30000);
+      let cursor = start;
+      for (let page = 0; page < 50; page++) {
+        const r = await this.rest(t.name + '?select=*&synced_at=gt.' + since + '&order=synced_at.asc,id.asc&limit=1000&offset=' + (page * 1000));
+        const rows = await r.json();
+        const changed = [];
+        for (const row of rows) {
+          cursor = Math.max(cursor, +row.synced_at || 0);
+          const local = t.map.get(row.id);
+          const v = Object.assign({}, row, { dirty: false });
+          delete v.synced_at; delete v.updated_by; delete v.created_by;
+          if (t.insertOnly) { if (!local) changed.push(v); continue; }
+          if (PC.remoteWins(local, v) && (!local || local.dirty || local.updated_at !== v.updated_at || local.deleted !== v.deleted)) changed.push(v);
+        }
+        if (changed.length) { await Store.putRows(t.name, changed); changed.forEach(v => t.map.set(v.id, v)); t.changed(changed); }
+        if (rows.length < 1000) break;
+      }
+      await Store.set('meta', key, cursor);
+    },
+    async pushTable(t) {
+      const dirty = [...t.map.values()].filter(v => v.dirty);
+      for (let i = 0; i < dirty.length; i += 200) {
+        const part = dirty.slice(i, i + 200);
+        const body = part.map(v => { const o = {}; for (const k of Object.keys(v)) if (k !== 'dirty' && k[0] !== '_') o[k] = v[k]; return o; });
+        await this.rest(t.name + '?on_conflict=id', {
+          method: 'POST', headers: { Prefer: (t.insertOnly ? 'resolution=ignore-duplicates' : 'resolution=merge-duplicates') + ',return=minimal' },
+          body: JSON.stringify(body),
+        });
+        const clean = [];
+        for (const v of part) {
+          const cur = t.map.get(v.id);
+          if (cur && cur.dirty && (t.insertOnly || cur.updated_at === v.updated_at)) { cur.dirty = false; clean.push(cur); }
+        }
+        await Store.putRows(t.name, clean);
+      }
+    },
+    async uploadFiles() {
+      for (const path of this.uploads.slice()) {
+        const f = await Store.get('files', path);
+        if (f && f.blob) {
+          const tok = await this.token();
+          let r;
+          try {
+            r = await fetch(this.base() + '/storage/v1/object/job-files/' + path.split('/').map(encodeURIComponent).join('/'), {
+              method: 'POST', body: f.blob,
+              headers: { apikey: CFG.supabaseKey, Authorization: 'Bearer ' + tok, 'Content-Type': f.type || 'application/octet-stream', 'x-upsert': 'false' },
+            });
+          } catch (e) { throw new Error('offline'); }
+          if (!r.ok) {
+            const t = await r.text().catch(() => '');
+            // already uploaded earlier (e.g. the app closed before it noted success) counts as done
+            if (!(r.status === 409 || /already exists|Duplicate/i.test(t))) throw new Error('file upload: server said ' + r.status);
+          }
+        }
+        this.uploads = this.uploads.filter(p => p !== path);
+        await Store.set('meta', 'uploads', this.uploads);
+      }
+    },
+    /** A photo or PDF: from this phone, or downloaded from the crew's storage. */
+    async file(path) {
+      const f = await Store.get('files', path);
+      if (f && f.blob) return f.blob;
+      if (!this.configured || !this.session || !navigator.onLine) return null;
+      try {
+        const tok = await this.token();
+        const r = await fetch(this.base() + '/storage/v1/object/authenticated/job-files/' + path.split('/').map(encodeURIComponent).join('/'),
+          { headers: { apikey: CFG.supabaseKey, Authorization: 'Bearer ' + tok } });
+        if (!r.ok) return null;
+        const blob = await r.blob();
+        await Store.set('files', path, { blob, type: blob.type });
+        return blob;
+      } catch (e) { return null; }
+    },
+    waiting() {
+      let n = 0;
+      byId.forEach(v => { if (v.dirty) n++; });
+      for (const t of this.tables) t.map.forEach(v => { if (v.dirty) n++; });
+      return n + this.uploads.length;
+    },
     async run() {
       if (!this.configured || !this.session || this.busy || !navigator.onLine) { updateSyncUi(); return; }
       this.busy = true;
@@ -274,7 +379,10 @@
         const crew = await (await this.rest('rpc/am_i_crew', { method: 'POST', body: '{}' })).json();
         if (crew !== true) throw new Error('This login isn’t on the crew list yet. Ask your crew lead to add it.');
         await this.pull();   // newer doors from the crew first, so an old edit here can't win
+        for (const t of this.tables) await this.pullTable(t);
+        await this.uploadFiles();   // files first, so another phone never sees a record whose PDF isn't there yet
         await this.push();
+        for (const t of this.tables) await this.pushTable(t);
         this.lastOk = Date.now();
         this.lastError = '';
       } catch (e) {
@@ -778,6 +886,13 @@
       sn.onclick = () => { closeSheet(); saveVisit(visit, lat, lon, visit.outcome, addr.value.trim(), note.value.trim(), true); };
       acts.appendChild(sn);
     }
+    const job = el('button', 'plain primary', visit && window.Jobs && window.Jobs.jobForDoor(visit.id) ? 'Open job' : 'Start job');
+    job.onclick = () => {
+      const a = addr.value.trim();
+      closeSheet();
+      if (window.Jobs) window.Jobs.startFromDoor({ visit, lat, lon, address: a, house: o.house || null });
+    };
+    acts.appendChild(job);
     const dir = el('button', 'plain', 'Directions');
     dir.onclick = () => { window.open('https://maps.apple.com/?daddr=' + lat.toFixed(7) + ',' + lon.toFixed(7), '_blank'); };
     acts.appendChild(dir);
@@ -839,15 +954,24 @@
 
   // ================================================================ history
   let filter = 'ALL';
-  function showTab(history) {
-    $('tabMap').classList.toggle('on', !history);
-    $('tabHistory').classList.toggle('on', history);
-    $('mapPanel').hidden = history;
-    $('historyPanel').hidden = !history;
-    if (history) buildHistory(); else setTimeout(() => map.invalidateSize(), 0);
+  // which: false/'map', true/'history', or 'customers'
+  let currentTab = 'map';
+  function showTab(which) {
+    const tab = which === true ? 'history' : (which === false || !which) ? 'map' : which;
+    currentTab = tab;
+    $('tabMap').classList.toggle('on', tab === 'map');
+    $('tabHistory').classList.toggle('on', tab === 'history');
+    $('tabCustomers').classList.toggle('on', tab === 'customers');
+    $('mapPanel').hidden = tab !== 'map';
+    $('historyPanel').hidden = tab !== 'history';
+    $('customersPanel').hidden = tab !== 'customers';
+    if (tab === 'history') buildHistory();
+    if (tab === 'customers' && window.Jobs) window.Jobs.showCustomers();
+    if (tab === 'map') setTimeout(() => map.invalidateSize(), 0);
   }
-  $('tabMap').onclick = () => showTab(false);
-  $('tabHistory').onclick = () => showTab(true);
+  $('tabMap').onclick = () => showTab('map');
+  $('tabHistory').onclick = () => showTab('history');
+  $('tabCustomers').onclick = () => showTab('customers');
 
   function buildHistory() {
     const chips = $('chips');
@@ -1112,6 +1236,8 @@
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
     try { (await Store.all('visits')).forEach(v => byId.set(v.id, v)); } catch (e) { /* nothing saved yet */ }
     await Sync.load().catch(() => {});
+    await Sync.loadUploads().catch(() => {});
+    if (window.JobsInit) { try { await window.JobsInit(); } catch (e) { console.error(e); } }
     rebuild();
     updateHint();
     Sync.start();
@@ -1123,5 +1249,9 @@
     if (granted || firstRun) startGps(firstRun && !lsGet('pc-view', null));
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   }
+  // Shared with jobs.js (customers, agreements, inspections).
+  window.App = { Store, Sync, toast, dialog, el, uuid, fmtDate, fmtTime, startOfToday, lsGet, lsSet, map,
+    get visits() { return visits; }, byId, saveVisit, nearestVisit, goTo, showTab: t => showTab(t), closeSheet,
+    houseCity: (la, lo) => { const h = Overlay.nearestAddress(la, lo, 35); return h ? { city: h.city || '', zip: h.zip || '' } : null; } };
   start();
 })();

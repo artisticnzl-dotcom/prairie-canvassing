@@ -223,7 +223,8 @@
       if (unit && st.indexOf('#') < 0) st += ' #' + unit;
       let id = Number(a.OBJECTID || a.FID || 0);
       if (!id) id = synthetic++;
-      out.push({ id, lat, lon, number: num, street: st, city: titleCase(field(a, 'MSAGCO') || field(a, 'POSTCO')) });
+      out.push({ id, lat, lon, number: num, street: st, city: titleCase(field(a, 'MSAGCO') || field(a, 'POSTCO')),
+        zip: (field(a, 'ZIP') || field(a, 'ZIPCODE') || field(a, 'POSTCODE')).replace(/\.0$/, '').slice(0, 10) });
     }
     return out;
   }
@@ -247,10 +248,10 @@
       const inside = buildings.find(h => houseContains(h, a.lat, a.lon));
       if (inside && !claimed.has(inside)) {
         claimed.add(inside);
-        inside.number = a.number; inside.street = a.street; inside.official = true;
+        inside.number = a.number; inside.street = a.street; inside.official = true; inside.city = a.city || ''; inside.zip = a.zip || '';
       } else {
         const p = makePoint('a' + a.id, a.lat, a.lon);
-        p.number = a.number; p.street = a.street; p.official = true;
+        p.number = a.number; p.street = a.street; p.official = true; p.city = a.city || ''; p.zip = a.zip || '';
         out.push(p);
       }
     }
