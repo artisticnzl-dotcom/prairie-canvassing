@@ -175,7 +175,7 @@
     panel.appendChild(list);
 
     // Unfinished work first, so nothing gets lost
-    const open = [...jobs.values()].filter(j => live(j) && ['draft', 'signed', 'inspecting'].includes(j.status) && customers.get(j.customer_id))
+    const open = [...jobs.values()].filter(j => live(j) && ['draft', 'signed', 'inspecting'].includes(j.status) && live(customers.get(j.customer_id)))
       .sort((a, b) => b.updated_at - a.updated_at);
     if (open.length && !customerQuery) {
       list.appendChild(el('div', 'day', 'Jobs in progress'));
@@ -1004,7 +1004,7 @@
   // ================================================================ customer & job pages
   function openCustomer(id) {
     const c = customers.get(id);
-    if (!c) { closePage(); return; }
+    if (!live(c)) { closePage(); A.showTab('customers'); return; }
     openPage({
       title: PJ.fullName(c) || 'Customer', kicker: 'Customer', back: () => { closePage(); A.showTab('customers'); },
       refresh: () => openCustomer(id),
@@ -1026,6 +1026,17 @@
           jl.appendChild(listRow(PJ.longDate(j.service_date) + ' · ' + PJ.money(j.total_cents || PJ.totals(j.services, j.adjustments).total),
             serviceSummary(j), STATUS[j.status] + ' · ' + (PAYMENT[j.payment_status] || 'Unpaid'), () => openJob(j.id)));
         }
+        const signed = js.filter(j => agreementsFor(j.id).length).length;
+        const more = card(body, 'More');
+        more.appendChild(button('Delete customer', 'danger', () => dialog('Delete ' + (PJ.fullName(c) || 'this customer') + '?',
+          'This removes the customer and ' + (js.length === 1 ? 'their job' : 'all ' + js.length + ' of their jobs') + ' from the app on every crew phone and tablet.' +
+          (signed ? ' Signed agreements are kept in the crew database as a record, but they won’t show in the app.' : '') + ' This can’t be undone in the app.',
+          [{ label: 'Keep' }, { label: 'Delete customer', cls: 'danger', run: async () => {
+            for (const j of js) await saveJob(Object.assign({}, jobs.get(j.id), { deleted: true }));
+            await saveRow('customers', customers, Object.assign({}, customers.get(c.id), { deleted: true }));
+            toast('Customer deleted.');
+            closePage(); A.showTab('customers');
+          } }])));
         foot.appendChild(button('New job for ' + (c.first_name || 'this customer'), 'primary big', () => wizard(c, newJob(c, null), 1, false)));
       },
     });
