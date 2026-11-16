@@ -705,6 +705,15 @@
   }
   function blobToDataUrl(b) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(b); }); }
   let badgeData = null;
+  // QR for the default Google review link (made from the link Google gives, with its tracking tags).
+  const REVIEW_QR_FOR = 'https://g.page/r/CcnmULVFXxSkEBM/review';
+  let qrData = null;
+  async function reviewQr() {
+    if (qrData) return qrData;
+    try { qrData = await blobToDataUrl(await (await fetch('review-qr.png')).blob()); } catch (e) { qrData = null; }
+    return qrData;
+  }
+
   async function badge() {
     if (badgeData) return badgeData;
     try { badgeData = await blobToDataUrl(await (await fetch('badge.jpg')).blob()); } catch (e) { badgeData = null; }
@@ -932,6 +941,24 @@
     }
     pdfNeed(st, 40);
     pdfText(st, 'This report describes visible conditions at the time of service. Findings are limited to the areas accessed during this visit.', { size: 9, color: PDF_MUTED });
+    // Google review request
+    const rurl = (b.review_url || '').trim();
+    if (rurl) {
+      const qr = rurl.split('?')[0] === REVIEW_QR_FOR ? await reviewQr() : null;
+      pdfNeed(st, 150);
+      st.y += 14;
+      const d = st.d, top = st.y;
+      d.setDrawColor(254, 168, 83); d.setLineWidth(1.5); d.roundedRect(46, top, 520, 128, 10, 10, 'S');
+      if (qr) d.addImage(qr, 'PNG', 60, top + 12, 104, 104);
+      const x = qr ? 182 : 62;
+      d.setFont('helvetica', 'bold'); d.setFontSize(15); d.setTextColor(16, 45, 55);
+      d.text('Happy with our work?', x, top + 36);
+      d.setFont('helvetica', 'normal'); d.setFontSize(11); d.setTextColor(...PDF_MUTED);
+      d.text(d.splitTextToSize((qr ? 'Scan the code with your phone camera' : 'Visit the link below') + ' to leave us a Google review. It takes a minute and helps a small local business a lot. Thank you!', 566 - x - 14), x, top + 56);
+      d.setTextColor(20, 102, 84); d.setFontSize(10);
+      d.textWithLink(rurl.split('?')[0], x, top + 108, { url: rurl });
+      st.y = top + 140;
+    }
     // photos, two per page
     const photos = j.photos || [];
     for (let i = 0; i < photos.length; i++) {
@@ -972,11 +999,39 @@
     document.body.appendChild(a); a.click();
     setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 60000);
   }
-  async function shareFile(path, name, subject, customer) {
+  function reviewLine() {
+    const u = business().review_url;
+    return u ? 'If you were happy with our work, a quick Google review would mean a lot to our small local business: ' + u : '';
+  }
+  function reviewMessage(c) {
+    return 'Hi ' + ((c && c.first_name) || 'there') + ', thank you for choosing ' + business().name + '! ' + reviewLine() + '\n\nThank you!';
+  }
+  /** Buttons that open a ready-to-send text or email asking for a Google review. */
+  function reviewCard(body, c) {
+    if (!business().review_url) return;
+    const k = card(body, 'Ask for a Google review');
+    k.appendChild(el('p', 'tip', 'The review link is already in the report message. Use these to send a separate request.'));
+    const r = row(k);
+    const msg = reviewMessage(c);
+    if (c.phone) {
+      const a = el('a', 'plain', 'Text review request');
+      a.href = 'sms:' + c.phone.replace(/[^\d+]/g, '') + (/iPhone|iPad|Macintosh/.test(navigator.userAgent) ? '&' : '?') + 'body=' + encodeURIComponent(msg);
+      r.appendChild(a);
+    }
+    if (c.email) {
+      const a = el('a', 'plain', 'Email review request');
+      a.href = 'mailto:' + encodeURIComponent(c.email) + '?subject=' + encodeURIComponent('Thank you from ' + business().name) + '&body=' + encodeURIComponent(msg);
+      r.appendChild(a);
+    }
+    if (!c.phone && !c.email) k.appendChild(el('p', 'muted', 'Add a phone number or email to this customer to send a request.'));
+  }
+
+  async function shareFile(path, name, subject, customer, askReview) {
     const blob = await Sync.file(path);
     if (!blob) { toast('This file isn’t on this device yet. Connect to the internet and sign in to download it.', true); return; }
     const file = new File([blob], name.replace(/[\\/:*?"<>|]/g, '-'), { type: blob.type || 'application/pdf' });
-    const text = customer ? 'Hi ' + (customer.first_name || '') + ',\n\nAttached is your ' + subject.toLowerCase().replace(/^your /, '') + '. Questions? Call or text ' + business().phone + '.\n\nThank you,\n' + business().name : '';
+    const text = customer ? 'Hi ' + (customer.first_name || '') + ',\n\nAttached is your ' + subject.toLowerCase().replace(/^your /, '') + '. Questions? Call or text ' + business().phone + '.' +
+      (askReview && reviewLine() ? '\n\n' + reviewLine() : '') + '\n\nThank you,\n' + business().name : '';
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try { await navigator.share({ files: [file], title: subject || name, text }); } catch (e) { /* closed the share sheet */ }
       return;
@@ -1122,7 +1177,8 @@
         k.appendChild(el('p', 'center muted', 'Created ' + A.fmtDate(j.report_at)));
         const r = row(k);
         r.appendChild(button('View report', '', () => viewFile(j.report_path, 'Inspection report.pdf')));
-        r.appendChild(button('Send to customer', '', () => shareFile(j.report_path, 'Prairie Lint Patrol inspection report ' + j.service_date + '.pdf', 'Your Prairie Lint Patrol inspection report', c)));
+        r.appendChild(button('Send to customer', '', () => shareFile(j.report_path, 'Prairie Lint Patrol inspection report ' + j.service_date + '.pdf', 'Your Prairie Lint Patrol inspection report', c, true)));
+        reviewCard(body, c);
         paymentCard(body, j);
         foot.appendChild(button('Done', 'primary big', () => openCustomer(c.id)));
       },
@@ -1237,7 +1293,8 @@
           const rp = card(body, 'Inspection report');
           const r = row(rp);
           r.appendChild(button('View report', '', () => viewFile(j.report_path, 'Inspection report.pdf')));
-          r.appendChild(button('Send to customer', '', () => shareFile(j.report_path, 'Prairie Lint Patrol inspection report ' + j.service_date + '.pdf', 'Your Prairie Lint Patrol inspection report', c)));
+          r.appendChild(button('Send to customer', '', () => shareFile(j.report_path, 'Prairie Lint Patrol inspection report ' + j.service_date + '.pdf', 'Your Prairie Lint Patrol inspection report', c, true)));
+          reviewCard(body, c);
         }
         paymentCard(body, j);
         const more = card(body, 'More');
@@ -1293,6 +1350,7 @@
         rvc.onchange = () => { v.requested_visits = rvc.checked; };
         rvl.append(rvc, el('span', '', 'Allow customer-requested visits (attorney approved)'));
         rv.appendChild(rvl);
+        input(k, 'Google review link (added to report messages)', v.review_url, { type: 'url', caps: 'off', onInput: x => { v.review_url = x.trim(); } });
         input(k, 'Online booking page (shown when scheduling)', v.booking_url, { type: 'url', caps: 'off', onInput: x => { v.booking_url = x.trim(); } });
         input(k, 'Payment terms', v.payment_terms, { multi: true, rows: 2, onInput: x => { v.payment_terms = x; } });
         const s = card(body, 'Standard services and prices');

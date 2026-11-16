@@ -215,3 +215,5 @@ select.field { height: 48px; background: var(--cream); }
 .plain.choice span{font-weight:400;font-size:14px;color:var(--muted,#455f64)}
 .plain.choice.on{border:2px solid #fea853;background:#fff9f1}
 .tip.warn{color:#7a3b10;background:#fff4e5;border-radius:10px;padding:8px 10px}
+
+a.plain{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;color:inherit}

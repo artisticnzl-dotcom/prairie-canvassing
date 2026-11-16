@@ -6,7 +6,7 @@
 
   const DEFAULT_BUSINESS = {
     name: 'Prairie Lint Patrol', street: '506 Clover Ln', city: 'Hesston', state: 'KS', zip: '67062',
-    phone: '620-869-1692', email: 'prairielintpatrol@gmail.com', website: 'PrairieLintPatrol.com', booking_url: 'https://prairielintpatrol.com/#book', requested_visits: false,
+    phone: '620-869-1692', email: 'prairielintpatrol@gmail.com', website: 'PrairieLintPatrol.com', booking_url: 'https://prairielintpatrol.com/#book', requested_visits: false, review_url: 'https://g.page/r/CcnmULVFXxSkEBM/review',
     payment_terms: 'Payment is due when the work is completed. We accept check, card, or ACH bank transfer.',
     services: [
       { name: 'Standard Dryer Vent Cleaning', description: 'Clean the dryer vent line from the dryer connection to the exterior termination, where accessible.', price_cents: 14900, default: true },
