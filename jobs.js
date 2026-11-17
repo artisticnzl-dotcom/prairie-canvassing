@@ -432,6 +432,7 @@
             totalBox.append(el('span', '', (j.adjustments.length ? 'Subtotal ' + PJ.money(t.subtotal) + ' · ' : '') + 'Total'), el('b', '', PJ.money(t.total)));
           };
           const k = card(body, 'Services');
+          if (addOnJobs.has(j.id)) k.appendChild(el('p', 'tip warn', 'Add the extra work the customer approved (tick a service or use “Add a custom service”). The work already agreed stays on the list. The customer signs an updated agreement for the new total, with a new 3-day right to cancel.'));
           k.appendChild(el('p', 'tip', 'Tick the work you’ll do. Every price can be changed for this job.'));
           const catalog = business().services;
           const listBox = el('div', '');
@@ -793,7 +794,9 @@
           s.appendChild(el('p', 'muted', 'The job is under Customers → Jobs in progress. Add it to your calendar or booking system too.'));
           foot.appendChild(button('Done', 'primary big', () => { closePage(); A.showTab('customers'); }));
         } else {
-          foot.appendChild(button('Begin inspection', 'primary big', () => inspection(jobId)));
+          const started = addOnJobs.has(jobId) || (j.photos || []).length || Object.keys(j.inspection || {}).length;
+          addOnJobs.delete(jobId);
+          foot.appendChild(button(started ? 'Continue inspection' : 'Begin inspection', 'primary big', () => inspection(jobId)));
         }
       },
     });
@@ -1059,6 +1062,19 @@
     } finally { URL.revokeObjectURL(url); }
   }
 
+  // Jobs where the technician is adding services found on site (kept on this device only).
+  const addOnJobs = new Set();
+  /** Extra work found during the visit: the customer approves it by signing an updated agreement. */
+  async function moreServices(jobId) {
+    const cur = jobs.get(jobId);
+    const c = customers.get(cur.customer_id);
+    addOnJobs.add(jobId);
+    // Extra work sold at the door is done today and always carries the 3-day right to cancel.
+    const d = Object.assign({}, cur, { status: 'draft', timing: 'now', service_date: PJ.ymd(new Date()), service_window: '', origin: 'door' });
+    await saveJob(d);
+    wizard(c, d, 1, false);
+  }
+
   function inspection(jobId, confirmed) {
     const j0 = jobs.get(jobId);
     const c = customers.get(j0.customer_id);
@@ -1081,6 +1097,13 @@
       back: () => { clearTimeout(timer); saveJob(Object.assign({}, j)).then(() => openCustomer(c.id)); },
       render(body, foot) {
         body.appendChild(el('p', 'tip', 'Everything saves on this device as you go.'));
+        const ms = card(body, 'Found more work?');
+        ms.appendChild(el('p', 'tip', 'Explain the extra work and its price first. If the customer wants it, add it here and they sign an updated agreement. Your notes and photos stay.'));
+        ms.appendChild(button('+ More services needed', '', async () => {
+          clearTimeout(timer);
+          await saveJob(Object.assign({}, j));
+          moreServices(jobId);
+        }));
         const k = card(body, 'Checklist');
         select(k, 'Vent termination', TERMINATIONS, j.inspection.termination, v => set('termination', v));
         select(k, 'Duct access', ACCESS, j.inspection.access, v => set('access', v));
@@ -1298,6 +1321,9 @@
         }
         paymentCard(body, j);
         const more = card(body, 'More');
+        if (['signed', 'inspecting', 'completed'].includes(j.status)) {
+          more.appendChild(button('+ More services needed', '', () => moreServices(j.id)));
+        }
         if (j.status !== 'draft' && j.status !== 'cancelled') {
           more.appendChild(button('Change work or price (new signed version)', '', () => dialog('Change the agreed work?',
             'The signed agreement stays as it is. You’ll edit the services and price, and the customer signs a new version.',
