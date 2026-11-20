@@ -1089,14 +1089,37 @@
     const j = Object.assign({}, j0, { inspection: Object.assign({}, j0.inspection || {}), photos: (j0.photos || []).slice() });
     if (j.status === 'signed') j.status = 'inspecting';
     if (!j.technician) j.technician = technician();
-    const save = () => { clearTimeout(timer); timer = setTimeout(() => saveJob(Object.assign({}, j)), 400); };
+    let changed = false;
+    const finished = j0.status === 'completed';
+    const save = () => { changed = true; clearTimeout(timer); timer = setTimeout(() => saveJob(Object.assign({}, j)), 400); };
+    // Saves the inspection, builds the report PDF and marks the job completed.
+    const makeReport = async () => {
+      clearTimeout(timer);
+      await saveJob(Object.assign({}, j));
+      const pdf = await reportPdf(jobs.get(j.id));
+      const path = j.id + '/report-' + Date.now() + '.pdf';
+      await putFile(path, pdf);
+      const done = Object.assign({}, jobs.get(j.id), { report_path: path, report_at: Date.now(), status: 'completed' });
+      await saveJob(done);
+      markDoor(done, c, 'COMPLETED');
+      reportPage(j.id);
+    };
     const set = (k, v) => { j.inspection[k] = v; save(); };
     let photoLabel = 'Before';
     openPage({
       title: PJ.fullName(c), kicker: 'Inspection · ' + PJ.longDate(j.service_date),
-      back: () => { clearTimeout(timer); saveJob(Object.assign({}, j)).then(() => openCustomer(c.id)); },
+      back: () => {
+        clearTimeout(timer);
+        saveJob(Object.assign({}, j)).then(() => {
+          if (!(finished && changed)) { openCustomer(c.id); return; }
+          dialog('Update the report?', 'You changed this inspection after its report was made. Update the report so it shows your changes?',
+            [{ label: 'Not now', run: () => openCustomer(c.id) },
+             { label: 'Update report', cls: 'primary', run: () => makeReport().catch(err => dialog('Couldn’t create the report', String(err.message || err))) }]);
+        });
+      },
       render(body, foot) {
         body.appendChild(el('p', 'tip', 'Everything saves on this device as you go.'));
+        if (finished) body.appendChild(el('p', 'tip warn', 'You’re editing a finished inspection. Your changes save as you type. Tap “Update report” when you’re done so the customer’s report matches.'));
         const ms = card(body, 'Found more work?');
         ms.appendChild(el('p', 'tip', 'Explain the extra work and its price first. If the customer wants it, add it here and they sign an updated agreement. Your notes and photos stay.'));
         ms.appendChild(button('+ More services needed', '', async () => {
@@ -1165,22 +1188,15 @@
           addBtn.disabled = false; addBtn.textContent = 'Take or add photo';
         };
         drawPhotos();
-        foot.appendChild(button('Create report', 'primary big', async e => {
+        const reportLabel = finished ? 'Update report' : 'Create report';
+        foot.appendChild(button(reportLabel, 'primary big', async e => {
           const b = e.target;
-          b.disabled = true; b.textContent = 'Creating report…';
-          clearTimeout(timer);
+          b.disabled = true; b.textContent = finished ? 'Updating report…' : 'Creating report…';
           try {
-            await saveJob(Object.assign({}, j));
-            const pdf = await reportPdf(jobs.get(j.id));
-            const path = j.id + '/report-' + Date.now() + '.pdf';
-            await putFile(path, pdf);
-            const done = Object.assign({}, jobs.get(j.id), { report_path: path, report_at: Date.now(), status: 'completed' });
-            await saveJob(done);
-            markDoor(done, c, 'COMPLETED');
-            reportPage(j.id);
+            await makeReport();
           } catch (err) {
             console.error(err);
-            b.disabled = false; b.textContent = 'Create report';
+            b.disabled = false; b.textContent = reportLabel;
             dialog('Couldn’t create the report', String(err.message || err));
           }
         }));
@@ -1201,6 +1217,7 @@
         const r = row(k);
         r.appendChild(button('View report', '', () => viewFile(j.report_path, 'Inspection report.pdf')));
         r.appendChild(button('Send to customer', '', () => shareFile(j.report_path, 'Prairie Lint Patrol inspection report ' + j.service_date + '.pdf', 'Your Prairie Lint Patrol inspection report', c, true)));
+        r.appendChild(button('Edit inspection', '', () => inspection(j.id)));
         reviewCard(body, c);
         paymentCard(body, j);
         foot.appendChild(button('Done', 'primary big', () => openCustomer(c.id)));
