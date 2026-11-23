@@ -69,12 +69,12 @@
   // ================================================================ storage on this phone (IndexedDB)
   const Store = {
     db: null,
-    mem: { visits: new Map(), meta: new Map(), chunks: new Map(), customers: new Map(), jobs: new Map(),
+    mem: { visits: new Map(), meta: new Map(), chunks: new Map(), customers: new Map(), jobs: new Map(), interactions: new Map(),
       agreements: new Map(), settings: new Map(), files: new Map() },
     open() {
       return new Promise(res => {
         let req;
-        try { req = indexedDB.open('prairie-canvassing', 2); } catch (e) { res(false); return; }
+        try { req = indexedDB.open('prairie-canvassing', 3); } catch (e) { res(false); return; }
         req.onupgradeneeded = ev => {
           const d = req.result;
           if (ev.oldVersion < 1) {
@@ -87,6 +87,7 @@
             for (const n of ['customers', 'jobs', 'agreements', 'settings']) d.createObjectStore(n, { keyPath: 'id' });
             d.createObjectStore('files');
           }
+          if (ev.oldVersion < 3) d.createObjectStore('interactions', { keyPath: 'id' }); // every door outcome, for Stats
         };
         req.onsuccess = () => { Store.db = req.result; res(true); };
         req.onerror = () => res(false);
@@ -149,6 +150,7 @@
     try {
       await Store.putVisits([v]);
       applyLocal([v]);
+      if (!keepTime && window.Stats) window.Stats.record(v);
       toast(OUT[outcome].label + (address ? ' · ' + address : ''));
       Sync.soon();
     } catch (e) { toast('Couldn’t save this door.', true); }
@@ -967,6 +969,9 @@
     $('tabMap').classList.toggle('on', tab === 'map');
     $('tabHistory').classList.toggle('on', tab === 'history');
     $('tabCustomers').classList.toggle('on', tab === 'customers');
+    $('tabStats').classList.toggle('on', tab === 'stats');
+    $('statsPanel').hidden = tab !== 'stats';
+    if (tab === 'stats' && window.Stats) window.Stats.show();
     $('mapPanel').hidden = tab !== 'map';
     $('historyPanel').hidden = tab !== 'history';
     $('customersPanel').hidden = tab !== 'customers';
@@ -977,6 +982,7 @@
   $('tabMap').onclick = () => showTab('map');
   $('tabHistory').onclick = () => showTab('history');
   $('tabCustomers').onclick = () => showTab('customers');
+  $('tabStats').onclick = () => showTab('stats');
 
   function buildHistory() {
     const chips = $('chips');
@@ -1243,6 +1249,7 @@
     await Sync.load().catch(() => {});
     await Sync.loadUploads().catch(() => {});
     if (window.JobsInit) { try { await window.JobsInit(); } catch (e) { console.error(e); } }
+    if (window.StatsInit) { try { await window.StatsInit(); } catch (e) { console.error(e); } }
     rebuild();
     updateHint();
     Sync.start();

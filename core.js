@@ -5,6 +5,7 @@
   const OUTCOMES = [
     { key: 'KNOCKED', label: 'Knocked', color: '#146654', mark: 'K' },
     { key: 'NO_ANSWER', label: 'No answer', color: '#52667C', mark: 'N' },
+    { key: 'TOOK_CARD', label: 'Took card', color: '#0E7C86', mark: 'T' },
     { key: 'FOLLOW_UP', label: 'Follow up', color: '#A84B13', mark: 'F' },
     { key: 'BOOKED', label: 'Booked', color: '#24539F', mark: 'B' },
     { key: 'COMPLETED', label: 'Completed', color: '#673E96', mark: 'C' },

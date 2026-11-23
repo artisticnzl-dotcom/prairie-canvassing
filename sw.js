@@ -1,8 +1,8 @@
 /* Keeps the app itself on the phone so it opens with no signal. Maps and addresses still need a connection. */
-const VERSION = 'pc-web-11';
+const VERSION = 'pc-web-12';
 const FILES = ['./', 'index.html', 'app.css', 'app.js', 'core.js', 'config.js', 'vendor/leaflet.js', 'vendor/leaflet.css',
   'icon-180.png', 'icon-192.png', 'icon-512.png', 'manifest.webmanifest',
-  'jobs.js', 'jobs-core.js', 'agreement-template.js', 'vendor/jspdf.umd.min.js', 'badge.jpg', 'badge.png', 'review-qr.png'];
+  'jobs.js', 'stats.js', 'jobs-core.js', 'agreement-template.js', 'vendor/jspdf.umd.min.js', 'badge.jpg', 'badge.png', 'review-qr.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
 });
