@@ -41,6 +41,10 @@ jobs:
           jq -e '.success' settings.json > /dev/null || { jq '.errors' settings.json; exit 1; }
           echo "Compatibility: $(jq -c '.result | {compatibility_date, compatibility_flags}' settings.json)"
           echo "Bindings (names and types only): $(jq -c '[.result.bindings[] | {name, type}]' settings.json)"
+          api "/versions/$PREV" > version.json
+          echo "Live version details (no secrets): $(jq -c '.result | {resources: (.resources | del(.bindings)), metadata}' version.json | head -c 3000)"
+          api /assets-config > assets-config.json 2>/dev/null || true
+          echo "Assets config endpoint: $(head -c 600 assets-config.json)"
       - name: Deploy new version
         if: inputs.action == 'deploy'
         id: deploy
