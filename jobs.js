@@ -12,7 +12,7 @@
   const CAMERA = ['Not performed', 'Completed on accessible sections', 'Limited view', 'Unable to inspect with camera'];
   const PHOTO_LABELS = ['Before', 'After', 'Camera view', 'Other finding'];
   const PHOTO_LIMIT = 12;
-  const STATUS = { draft: 'Not signed yet', signed: 'Signed — ready to inspect', inspecting: 'Inspection in progress', completed: 'Completed', cancelled: 'Cancelled by customer' };
+  const STATUS = { awaiting: 'Sent to sign — waiting for the customer', draft: 'Not signed yet', signed: 'Signed — ready to inspect', inspecting: 'Inspection in progress', completed: 'Completed', cancelled: 'Cancelled by customer' };
   const PAYMENT = { unpaid: 'Unpaid', partial: 'Partly paid', paid: 'Paid' };
   const METHODS = ['', 'Check', 'Card', 'ACH bank transfer', 'Cash', 'Other'];
 
@@ -21,6 +21,7 @@
   const live = c => c && !c.deleted;
 
   function refresh() {
+    processSignedRequests();
     if (!$('customersPanel').hidden) showCustomers();
     if (currentPage && currentPage.refresh) currentPage.refresh();
   }
@@ -28,11 +29,16 @@
   Sync.addTable({ name: 'jobs', map: jobs, changed: refresh });
   Sync.addTable({ name: 'settings', map: settings, changed: refresh });
   Sync.addTable({ name: 'agreements', map: agreements, changed: refresh, insertOnly: true });
+  // Agreements sent to customers to sign on their own phone. Once signed, the customer's signature always wins.
+  const signRequests = new Map();
+  Sync.addTable({ name: 'sign_requests', map: signRequests, changed: () => { processSignedRequests(); refresh(); },
+    remoteWins: (local, v) => (v.status === 'signed' && (!local || local.status !== 'signed' || (!local.agreement_id && v.agreement_id))) || PC.remoteWins(local, v) });
 
   window.JobsInit = async () => {
-    for (const [name, m] of [['customers', customers], ['jobs', jobs], ['agreements', agreements], ['settings', settings]]) {
+    for (const [name, m] of [['customers', customers], ['jobs', jobs], ['agreements', agreements], ['settings', settings], ['sign_requests', signRequests]]) {
       try { (await Store.all(name)).forEach(r => m.set(r.id, r)); } catch (e) { /* first run */ }
     }
+    processSignedRequests();
   };
 
   function business() {
@@ -74,6 +80,7 @@
   }
   const WINDOWS = ['Any time', 'Morning', 'Afternoon', 'Evening'];
   function jobWhen(j) {
+    if (j.status === 'awaiting') return 'Waiting for the customer to sign · ' + PJ.longDate(j.service_date);
     const d = PJ.longDate(j.service_date) + (j.service_window ? ', ' + j.service_window.toLowerCase() : '');
     if (j.status === 'signed' && j.timing === 'scheduled') return 'Scheduled · ' + d;
     if (j.status === 'signed' && j.timing === 'now') return 'Signed — doing the work today · ' + d;
@@ -187,7 +194,7 @@
     panel.appendChild(list);
 
     // Unfinished work first, so nothing gets lost
-    const open = [...jobs.values()].filter(j => live(j) && ['draft', 'signed', 'inspecting'].includes(j.status) && live(customers.get(j.customer_id)))
+    const open = [...jobs.values()].filter(j => live(j) && ['awaiting', 'draft', 'signed', 'inspecting'].includes(j.status) && live(customers.get(j.customer_id)))
       .sort((a, b) => (a.status === 'draft') - (b.status === 'draft') || (a.service_date || '').localeCompare(b.service_date || '') || b.updated_at - a.updated_at);
     if (open.length && !customerQuery) {
       list.appendChild(el('div', 'day', 'Jobs in progress'));
@@ -268,6 +275,7 @@
     const c = customers.get(j.customer_id);
     if (!c) { toast('This job’s customer hasn’t synced to this phone yet.', true); return; }
     if (j.status === 'draft') wizard(c, j, j.services && j.services.length && c.first_name && j.timing ? 1 : 0, false);
+    else if (j.status === 'awaiting') remoteSignPage(j.id);
     else if (j.status === 'signed' || j.status === 'inspecting') inspection(j.id);
     else openJob(j.id);
   }
@@ -568,6 +576,13 @@
             if (T.timing && (j.timing === 'now' || j.timing === 'scheduled') && !timingOk) { toast('The customer needs to confirm when the work will be done.', true); return; }
             go(3);
           }));
+          if (j.timing === 'scheduled' && !R) {
+            foot.appendChild(button('Send to the customer to sign on their phone', 'big', async () => {
+              if (!oral) { toast('Tell the customer about their 3-day right to cancel (at the door or by phone), then tick the first box.', true); return; }
+              if (!c.phone && !c.email) { toast('Add the customer’s phone or email in step 1 so you can send the link.', true); return; }
+              try { await persist(); await sendForSigning(c, j); } catch (e) { dialog('Couldn’t send the agreement', (e.message || e)); }
+            }));
+          }
         },
       });
     }
@@ -780,6 +795,150 @@
     markDoor(job, c, 'BOOKED');
     Sync.soon();
     signedPage(job.id, id);
+  }
+
+  // ================================================================ remote signing (customer signs on their own phone)
+  /** The last day the customer can sign and still have the 3-day cancel period end before the scheduled date. */
+  function lastSignDate(serviceYmd) {
+    const d = PJ.parseYmd(serviceYmd);
+    for (let k = 1; k <= 40; k++) {
+      const t = new Date(d.getFullYear(), d.getMonth(), d.getDate() - k);
+      if (PJ.firstScheduleDate(PJ.ymd(t)) <= serviceYmd) return PJ.ymd(t);
+    }
+    return PJ.ymd(new Date());
+  }
+  function randomToken() {
+    const b = new Uint8Array(24);
+    crypto.getRandomValues(b);
+    return btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function signLink(sr) { return new URL('sign.html', location.href).href.split('?')[0] + '#t=' + sr.token; }
+  function openSignRequest(jobId) {
+    return [...signRequests.values()].filter(r => r.job_id === jobId && !r.deleted && r.status === 'sent').sort((a, b) => b.updated_at - a.updated_at)[0] || null;
+  }
+  async function sendForSigning(c, j) {
+    const today = PJ.ymd(new Date());
+    if (!(j.service_date >= PJ.firstScheduleDate(today))) throw new Error('The scheduled date must be on or after ' + PJ.longDate(PJ.firstScheduleDate(today)) + '. Go back to step 1 and pick a new date.');
+    const signBy = lastSignDate(j.service_date);
+    const version = agreementsFor(j.id).length ? agreementsFor(j.id)[agreementsFor(j.id).length - 1].version + 1 : 1;
+    const old = openSignRequest(j.id);
+    if (old) await saveRow('sign_requests', signRequests, Object.assign({}, old, { status: 'void' }));
+    const by = PJ.parseYmd(signBy);
+    const sr = {
+      id: uuid(), token: randomToken(), job_id: j.id, customer_id: c.id, version, status: 'sent', sent_by: technician(),
+      expires_at: new Date(by.getFullYear(), by.getMonth(), by.getDate(), 23, 59, 59).getTime(),
+      payload: {
+        template: T.template, version, business: business(), technician: j.technician || technician(), sign_by: signBy,
+        customer: { first_name: c.first_name, last_name: c.last_name, street: c.street, city: c.city, state: c.state, zip: c.zip, phone: c.phone, email: c.email },
+        job: { id: j.id, services: j.services, adjustments: j.adjustments, service_date: j.service_date, service_window: j.service_window || '', timing: 'scheduled', origin: 'door', request: {} },
+      },
+    };
+    await saveRow('sign_requests', signRequests, sr);
+    await saveJob(Object.assign({}, jobs.get(j.id) || j, { status: 'awaiting', timing: 'scheduled', origin: 'door', request: {},
+      total_cents: PJ.totals(j.services, j.adjustments).total, technician: j.technician || technician() }));
+    remoteSignPage(j.id, true);
+  }
+  function signMessage(c, j, sr) {
+    return 'Hi ' + (c.first_name || 'there') + ', here is your ' + business().name + ' service agreement for ' + PJ.longDate(j.service_date) +
+      '. Please review and sign it here: ' + signLink(sr) + '\n\nPlease sign by ' + PJ.longDate(sr.payload.sign_by) + '. Questions? Call or text ' + business().phone + '.';
+  }
+  function remoteSignPage(jobId, fresh) {
+    const j = jobs.get(jobId);
+    if (!j) return;
+    const c = customers.get(j.customer_id);
+    openPage({
+      title: 'Waiting for signature', kicker: PJ.fullName(c), back: () => openCustomer(c.id), refresh: () => remoteSignPage(jobId),
+      render(body, foot) {
+        const cur = jobs.get(jobId);
+        if (cur.status !== 'awaiting') { openJob(jobId); return; }
+        const sr = openSignRequest(jobId);
+        const k = card(body);
+        if (!sr) {
+          k.appendChild(el('p', '', 'The signing link isn’t on this device yet. Connect to the internet so it can sync.'));
+          return;
+        }
+        k.appendChild(el('p', 'big', (fresh ? 'Now send the link. ' : '') + 'The customer signs on their own phone.'));
+        k.appendChild(el('p', '', serviceSummary(cur) + ' · ' + PJ.money(cur.total_cents || PJ.totals(cur.services, cur.adjustments).total)));
+        k.appendChild(el('p', '', 'Scheduled for ' + PJ.longDate(cur.service_date) + (cur.service_window ? ', ' + cur.service_window.toLowerCase() : '') + '.'));
+        k.appendChild(el('p', 'tip warn', 'They must sign by ' + PJ.longDate(sr.payload.sign_by) + ' so the 3-day cancel period ends before the visit. The link stops working after that.'));
+        const msg = signMessage(c, cur, sr);
+        const r = row(k);
+        if (c.phone) {
+          const a = el('a', 'plain', 'Text the link');
+          a.href = 'sms:' + c.phone.replace(/[^\d+]/g, '') + (/iPhone|iPad|Macintosh/.test(navigator.userAgent) ? '&' : '?') + 'body=' + encodeURIComponent(msg);
+          r.appendChild(a);
+        }
+        if (c.email) {
+          const a = el('a', 'plain', 'Email the link');
+          a.href = 'mailto:' + encodeURIComponent(c.email) + '?subject=' + encodeURIComponent('Your ' + business().name + ' service agreement') + '&body=' + encodeURIComponent(msg);
+          r.appendChild(a);
+        }
+        r.appendChild(button('Copy link', '', async () => {
+          try { await navigator.clipboard.writeText(signLink(sr)); toast('Link copied.'); } catch (e) { dialog('Signing link', signLink(sr)); }
+        }));
+        body.appendChild(el('p', 'tip', 'When they sign, this job turns to “Scheduled” on every crew phone, and the signed agreement PDF is saved with the job. Their cancel period counts from the day they sign.'));
+        const more = card(body, 'More');
+        more.appendChild(button('Cancel the link and sign here instead', '', () => dialog('Cancel the signing link?',
+          'The link stops working right away. If the customer already signed, their signature still counts.',
+          [{ label: 'Keep the link' }, { label: 'Cancel the link', cls: 'primary', run: async () => {
+            await saveRow('sign_requests', signRequests, Object.assign({}, sr, { status: 'void' }));
+            const d = Object.assign({}, jobs.get(jobId), { status: 'draft' });
+            await saveJob(d);
+            wizard(c, d, 1, false);
+          } }])));
+        foot.appendChild(button('Done', 'primary big', () => { closePage(); A.showTab('customers'); }));
+      },
+    });
+  }
+  /** Turns a request the customer signed on their phone into a signed agreement (PDF + job), once, on any crew phone. */
+  let processing = false;
+  async function processSignedRequests() {
+    if (processing) return;
+    processing = true;
+    try {
+      for (const sr of [...signRequests.values()]) {
+        if (sr.deleted || sr.status !== 'signed' || sr.agreement_id) continue;
+        const j = jobs.get(sr.job_id), c = customers.get(sr.customer_id);
+        if (!j || !c) continue;   // wait until they sync
+        if (!agreements.has(sr.id)) {
+          const p = sr.payload, tx = sr.transaction_date;
+          const ctx = { template: T, business: p.business, customer: p.customer, job: p.job, version: sr.version,
+            agreement_no: PJ.agreementNo(sr.job_id, tx), transaction_date: tx, technician: p.technician };
+          const r = PJ.renderAgreement(ctx);
+          const matches = (await sha256(sr.document_text)) === sr.document_sha256 && r.text === sr.document_text;
+          const sigPath = sr.job_id + '/agreement-v' + sr.version + '-signature.png';
+          const pdfPath = sr.job_id + '/agreement-v' + sr.version + '.pdf';
+          const doc = {
+            template: p.template, agreement_no: ctx.agreement_no, transaction_date: tx, business: p.business, customer: p.customer,
+            service_date: p.job.service_date, timing: 'scheduled', service_window: p.job.service_window || '', origin: 'door', request: {},
+            services: p.job.services, adjustments: p.job.adjustments, technician: p.technician, notice: r.notice,
+            signed_remotely: true, sign_request_id: sr.id, text_matches_app: matches,
+          };
+          const a = { id: sr.id, job_id: sr.job_id, customer_id: sr.customer_id, version: sr.version, document: doc, document_text: sr.document_text,
+            document_sha256: sr.document_sha256, total_cents: sr.total_cents, signer_name: sr.signer_name, signed_at: sr.signed_at, signed_tz: sr.signed_tz || '',
+            cancel_by: sr.cancel_by, signature_path: sigPath, pdf_path: pdfPath, device: ('Signed on customer’s device: ' + (sr.device || '')).slice(0, 160) };
+          const pdf = await agreementPdf(a, sr.signature);
+          await putFile(sigPath, dataUrlToBlob(sr.signature));
+          await putFile(pdfPath, pdf);
+          a.dirty = true;
+          agreements.set(a.id, a);
+          await Store.putRows('agreements', [a]);
+        }
+        const cur = jobs.get(sr.job_id);
+        if (cur.status === 'awaiting' || cur.status === 'draft') {
+          const p = sr.payload;
+          await saveJob(Object.assign({}, cur, { status: 'signed', agreement_id: sr.id, total_cents: sr.total_cents, technician: p.technician, timing: 'scheduled',
+            service_date: p.job.service_date, service_window: p.job.service_window || '', origin: 'door', request: {}, services: p.job.services, adjustments: p.job.adjustments }));
+          markDoor(jobs.get(sr.job_id), c, 'BOOKED');
+          toast(PJ.fullName(c) + ' signed the agreement.');
+        }
+        await saveRow('sign_requests', signRequests, Object.assign({}, signRequests.get(sr.id), { agreement_id: sr.id }));
+      }
+    } catch (e) {
+      console.error('remote signing', e);
+    } finally {
+      processing = false;
+    }
   }
 
   /** Keeps the canvassing map in step: signed = Booked, report done = Completed. */
@@ -1354,6 +1513,7 @@
         const k = card(body, 'Status');
         k.appendChild(el('p', 'big', STATUS[j.status] || j.status));
         k.appendChild(el('p', '', serviceSummary(j)));
+        if (j.status === 'awaiting') k.appendChild(button('Open the signing link', '', () => remoteSignPage(j.id)));
         k.appendChild(el('p', 'big', PJ.money(j.total_cents || PJ.totals(j.services, j.adjustments).total)));
         if (list.length) {
           const ag = card(body, 'Signed agreements');
@@ -1390,11 +1550,11 @@
             'Refund any payment within 10 business days of receiving their notice, as the agreement says.',
             [{ label: 'Keep job' }, { label: 'Mark cancelled', cls: 'danger', run: () => saveJob(Object.assign({}, jobs.get(j.id), { status: 'cancelled' })).then(() => openJob(j.id)) }])));
         }
-        if (!list.length) {
+        if (!list.length && j.status !== 'awaiting') {
           more.appendChild(button('Delete this unsigned job', 'danger', () => dialog('Delete this job?', 'It hasn’t been signed. This can’t be undone.',
             [{ label: 'Keep' }, { label: 'Delete', cls: 'danger', run: () => saveJob(Object.assign({}, jobs.get(j.id), { deleted: true })).then(() => openCustomer(c.id)) }])));
         }
-        const label = j.status === 'draft' ? 'Continue: ' + (list.length ? 'sign new version' : 'set up & sign')
+        const label = j.status === 'awaiting' ? '' : j.status === 'draft' ? 'Continue: ' + (list.length ? 'sign new version' : 'set up & sign')
           : j.status === 'signed' ? 'Begin inspection' : j.status === 'inspecting' ? 'Continue inspection'
             : j.status === 'completed' ? 'Edit inspection & recreate report' : '';
         if (label) foot.appendChild(button(label, 'primary big', () => (j.status === 'draft' ? wizard(c, j, 1, false) : inspection(j.id))));

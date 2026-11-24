@@ -70,11 +70,11 @@
   const Store = {
     db: null,
     mem: { visits: new Map(), meta: new Map(), chunks: new Map(), customers: new Map(), jobs: new Map(), interactions: new Map(),
-      agreements: new Map(), settings: new Map(), files: new Map() },
+      agreements: new Map(), settings: new Map(), files: new Map(), sign_requests: new Map() },
     open() {
       return new Promise(res => {
         let req;
-        try { req = indexedDB.open('prairie-canvassing', 3); } catch (e) { res(false); return; }
+        try { req = indexedDB.open('prairie-canvassing', 4); } catch (e) { res(false); return; }
         req.onupgradeneeded = ev => {
           const d = req.result;
           if (ev.oldVersion < 1) {
@@ -88,6 +88,7 @@
             d.createObjectStore('files');
           }
           if (ev.oldVersion < 3) d.createObjectStore('interactions', { keyPath: 'id' }); // every door outcome, for Stats
+          if (ev.oldVersion < 4) d.createObjectStore('sign_requests', { keyPath: 'id' }); // agreements sent to customers to sign on their phone
         };
         req.onsuccess = () => { Store.db = req.result; res(true); };
         req.onerror = () => res(false);
@@ -306,7 +307,8 @@
           const v = Object.assign({}, row, { dirty: false });
           delete v.synced_at; delete v.updated_by; delete v.created_by;
           if (t.insertOnly) { if (!local) changed.push(v); continue; }
-          if (PC.remoteWins(local, v) && (!local || local.dirty || local.updated_at !== v.updated_at || local.deleted !== v.deleted)) changed.push(v);
+          const wins = t.remoteWins ? t.remoteWins(local, v) : PC.remoteWins(local, v);
+          if (wins && (!local || local.dirty || local.updated_at !== v.updated_at || local.deleted !== v.deleted)) changed.push(v);
         }
         if (changed.length) { await Store.putRows(t.name, changed); changed.forEach(v => t.map.set(v.id, v)); t.changed(changed); }
         if (rows.length < 1000) break;
