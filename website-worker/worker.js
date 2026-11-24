@@ -432,7 +432,7 @@ function updateWebsiteCopy(response) {
  .on("#faq .faq details:nth-child(5) p", { element(el) { el.setInnerContent("$149 standard and $169 roof-exhaust are the prices for a typical accessible vent. Very long runs, difficult access, and multiple units or properties receive a custom quote. Your total is confirmed in writing on your service agreement before work begins. Extra work requires your separate approval on a new signed agreement.", {html:true}); } })
  .on("#faq .faq", { element(el) { el.append("<details><summary><h3>When can I schedule service?</h3></summary><p>Call, text, email or book online to request a future appointment. We will follow up to confirm your date and arrival window. If the sale starts at your door, we schedule the work after the applicable cancellation period. We do not perform same-day cleaning.</p></details><details><summary><h3>What will I sign?</h3></summary><p>Every customer signs a written service agreement listing the services and total price before work starts. Any extra work needs your separate approval on a new signed agreement.</p></details><details><summary><h3>Can I cancel a door-to-door service agreement?</h3></summary><p>For a qualifying Kansas door-to-door sale, you may cancel without penalty or obligation until midnight of the third business day after the transaction date. You receive a completed agreement and two copies of the Notice of Cancellation with the deadline and instructions. Payments are refunded within 10 business days after we receive a valid cancellation notice. Saturdays generally count; Sundays and legal holidays do not. Booking online does not waive any cancellation rights.</p></details><details><summary><h3>When do I pay?</h3></summary><p>Payment is due when the work is completed. We accept check, card or ACH bank transfer. No interest or finance charges. No payment is collected through the booking form.</p></details>", {html:true}); } })
  .on("#book .bookingcopy .check:first-child", { element(el) { el.setInnerContent("Standard cleaning $149; roof-exhaust cleaning $169", {html:true}); } })
- .on("#book .fields", { element(el) { el.prepend("<fieldset class=\"field full contact-options plp-visit-options\"><legend>Did a Prairie Lint Patrol technician stop by your home before you booked? *</legend><label><input type=\"radio\" name=\"technicianVisit\" value=\"yes\" required> Yes</label><label><input type=\"radio\" name=\"technicianVisit\" value=\"no\" required> No</label></fieldset><div class=\"field full\"><label for=\"preferredTime\">Preferred time of day</label><select id=\"preferredTime\" name=\"preferredTime\"><option value=\"any\">Any time</option><option value=\"morning\">Morning</option><option value=\"afternoon\">Afternoon</option><option value=\"evening\">Evening</option></select><small>Your selected appointment window is your requested time; this preference helps us arrange alternatives if needed.</small></div>", {html:true}); } })
+ .on("#book .fields", { element(el) { el.prepend("<fieldset class=\"field full contact-options plp-visit-options\"><legend>Did a Prairie Lint Patrol technician stop by your home before you booked? *</legend><label><input type=\"radio\" name=\"technicianVisit\" value=\"yes\" required> Yes</label><label><input type=\"radio\" name=\"technicianVisit\" value=\"no\" required> No</label></fieldset>" + (PLP_LIVE_ON ? "" : "<div class=\"field full\"><label for=\"preferredTime\">Preferred time of day</label><select id=\"preferredTime\" name=\"preferredTime\"><option value=\"any\">Any time</option><option value=\"morning\">Morning</option><option value=\"afternoon\">Afternoon</option><option value=\"evening\">Evening</option></select><small>Your selected appointment window is your requested time; this preference helps us arrange alternatives if needed.</small></div>") + "", {html:true}); } })
  .on("#book .contact-options:not(.plp-visit-options)", { element(el) { el.append("<label><input type=\"radio\" name=\"contactMethod\" value=\"email\" required> Email</label>", {html:true}); } })
  .on("#type", { element(el) { el.setInnerContent("<option>Standard dryer vent cleaning ($149)</option><option>Roof-exhaust dryer vent cleaning ($169)</option><option>Complex or long vent run (quote)</option><option>Multiple properties or units (quote)</option><option>Not sure</option>", {html:true}); } })
  .on("#reviews blockquote", { element(el) { el.prepend("<p class=\"plp-review-disclosure\">Disclosure: John Lambert is a relative of owner Zach Lambert.</p>", {html:true}); } })
@@ -617,4 +617,208 @@ worker_default.fetch = async function(request, env, ctx) {
     return testPage(response);
   }
   return plpOriginalFetch(request,env,ctx);
+};
+
+// PLP_LIVE_BOOKING_V1 - real website bookings go to the shared Supabase calendar (the app sees them),
+// then a copy goes to the Google Sheet (which also emails the customer), then the business email.
+// Without the PLP_BOOKING_LIVE_KEY secret, everything falls back to the original sheet-only handlers.
+const LIVE_HEADERS = { 'Cache-Control': 'no-store' };
+const LIVE_MESSAGES = {
+  cancel_period: 'Because a technician visited you first, the earliest appointment is after your 3-day cancellation period. Please choose a later date.',
+  unavailable: 'That time is no longer available. Please choose another time.',
+  slot_taken: 'That time is no longer available. Please choose another time.',
+  rate_limited: 'Too many requests were submitted. Please wait a minute and try again.',
+  idempotency_conflict: 'Please review the form and send your request again.',
+};
+const LIVE_FIELDS = {
+  name: 'full name', phone: 'phone number', email: 'email address', contact_pref: 'contact method',
+  street: 'service address', city: 'city', zip: 'ZIP code', service: 'service', notes: 'notes',
+  tech_visited_first: 'answer about a technician visit', slot_id: 'appointment time', unit: 'apartment or unit',
+};
+function liveSlotId(date, startHour) {
+  const h = Number(startHour);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '') || !Number.isInteger(h) || h < 0 || h > 22) return '';
+  const p = n => String(n).padStart(2, '0');
+  return `${date}_${p(h)}00-${p(h + 2)}00`;
+}
+async function liveRpc(name, body, env, fetcher) {
+  const response = await fetcher('https://bhouipoucvprekksdbjd.supabase.co/rest/v1/rpc/' + name, {
+    method: 'POST', headers: { apikey: env.PLP_SUPABASE_PUBLISHABLE_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...body, p_client_key: env.PLP_BOOKING_LIVE_KEY }), signal: AbortSignal.timeout(12000),
+  });
+  if (!response.ok) throw new Error('transport ' + response.status);
+  const data = await response.json();
+  if (!data || typeof data.ok !== 'boolean') throw new Error('schema');
+  return data;
+}
+function bookingBoundsLive(now = new Date()) {
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+  const t = Date.parse(today + 'T00:00:00Z');
+  const d = x => new Date(x).toISOString().slice(0, 10);
+  return { first: d(t + 86400000), last: d(t + 90 * 86400000) };
+}
+async function liveAvailability(request, env, fetcher = fetch) {
+  if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...LIVE_HEADERS, Allow: 'GET' } });
+  try {
+    if (env.BOOKING_RATE_LIMIT) {
+      const { success } = await env.BOOKING_RATE_LIMIT.limit({ key: 'calendar:' + (request.headers.get('CF-Connecting-IP') || 'unknown') });
+      if (!success) return Response.json({ ok: false }, { status: 429, headers: LIVE_HEADERS });
+    }
+    const v = new URL(request.url).searchParams.get('visited');
+    const visited = ['yes', 'no'].includes(v) ? v : null;
+    const { first, last } = bookingBoundsLive();
+    const chunks = [];
+    for (let from = first; from <= last;) {
+      const to = new Date(Math.min(Date.parse(from + 'T00:00:00Z') + 61 * 86400000, Date.parse(last + 'T00:00:00Z'))).toISOString().slice(0, 10);
+      chunks.push({ p_from: from, p_to: to, p_tech_visited_first: visited });
+      from = new Date(Date.parse(to + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10);
+    }
+    const results = await Promise.all(chunks.map(b => liveRpc('open_slots', b, env, fetcher)));
+    const days = {}; let earliest = first;
+    for (const r of results) {
+      if (!r.ok || r.time_zone !== 'America/Chicago' || !Array.isArray(r.days)) throw new Error('calendar');
+      if (/^\d{4}-\d{2}-\d{2}$/.test(r.earliest_date || '') && r.earliest_date > earliest) earliest = r.earliest_date;
+      for (const day of r.days) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day.date) || day.date < first || day.date > last || day.closed === true || !Array.isArray(day.slots)) continue;
+        const slots = day.slots.filter(s => s.available === true && typeof s.slot_id === 'string' && /^\d{2}:00-\d{2}:00$/.test(s.window || ''))
+          .map(s => ({ slotId: s.slot_id, startHour: Number(s.window.slice(0, 2)), label: String(s.label).replace(' – ', '–') }));
+        if (slots.length) days[day.date] = slots;
+      }
+    }
+    const months = [];
+    for (let m = new Date(first.slice(0, 7) + '-01T00:00:00Z'); m.toISOString().slice(0, 7) <= last.slice(0, 7); m.setUTCMonth(m.getUTCMonth() + 1)) months.push(m.toISOString().slice(0, 7));
+    return Response.json({ ok: true, first: earliest, months, days, timeZone: 'America/Chicago', visited }, { headers: LIVE_HEADERS });
+  } catch (e) {
+    console.error('Live calendar failed', String(e?.message || e));
+    return Response.json({ ok: false }, { status: 503, headers: LIVE_HEADERS });
+  }
+}
+const LIVE_SERVICE = {
+  'Standard dryer vent cleaning ($149)': 'standard', 'Roof-exhaust dryer vent cleaning ($169)': 'roof_exhaust',
+  'Complex or long vent run (quote)': 'complex', 'Multiple properties or units (quote)': 'multi_unit', 'Not sure': 'not_sure',
+};
+function liveReply(request, status, message = '', extra = {}) {
+  const headers = { ...LIVE_HEADERS };
+  if (status === 429) headers['Retry-After'] = '60';
+  if (request.headers.get('Accept')?.includes('application/json')) return Response.json({ ok: status === 200, message, ...extra }, { status, headers });
+  if (status === 200) return new Response(null, { status: 303, headers: { ...headers, Location: extra.customerEmailSent ? '/thanks' : '/thanks?email=pending' } });
+  const safe = String(message).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Booking request | Prairie Lint Patrol</title><main><h1>We couldn't send your request</h1><p>${safe}</p><p><a href="/#book">Return to the booking form</a></p></main></html>`,
+    { status, headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } });
+}
+async function liveReadForm(request) {
+  const reader = request.body?.getReader(); if (!reader) return new URLSearchParams();
+  const chunks = []; let length = 0;
+  for (;;) { const { done, value } = await reader.read(); if (done) break; length += value.length; if (length > 32768) { await reader.cancel(); return null; } chunks.push(value); }
+  const bytes = new Uint8Array(length); let i = 0; for (const c of chunks) { bytes.set(c, i); i += c.length; }
+  return new URLSearchParams(new TextDecoder().decode(bytes));
+}
+// deps lets tests replace the sheet call and the email builder
+async function liveBooking(request, env, deps = {}) {
+  const fetcher = deps.fetch || fetch;
+  const sheet = deps.callScheduling || ((r, e) => callScheduling(r, e));
+  const buildEmail = deps.makeEmail || ((r, e, f) => makeEmail(r, e, f));
+  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405, headers: { Allow: 'POST' } });
+  const url = new URL(request.url);
+  if (request.headers.get('Origin') !== url.origin || request.headers.get('Sec-Fetch-Site') === 'cross-site')
+    return liveReply(request, 403, 'Open the Prairie Lint Patrol website and send your request from there.');
+  if (request.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase() !== 'application/x-www-form-urlencoded')
+    return liveReply(request, 415, 'Please send your request through the booking form.');
+  let form;
+  try { form = await liveReadForm(request); } catch { return liveReply(request, 400, "We couldn't read your request. Please check the form and try again."); }
+  if (!form) return liveReply(request, 413, 'The request is too long. Please shorten your notes and try again.');
+  if (form.get('bot-field')) return liveReply(request, 200, '', { customerEmailSent: true });
+  const get = k => (form.get(k) || '').trim();
+  const requestId = get('requestId');
+  if (!/^[a-f0-9]{32}$/.test(requestId)) return liveReply(request, 422, 'Please refresh the page and send your request again.');
+  if (!['yes', 'no'].includes(get('technicianVisit'))) return liveReply(request, 422, 'Please tell us whether a technician stopped by before you booked.');
+  const slotId = get('slotId') || liveSlotId(get('date'), get('startHour'));
+  if (!slotId || slotId.length > 40) return liveReply(request, 422, 'Please choose an available date and time.');
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  try {
+    const { success } = await env.BOOKING_RATE_LIMIT.limit({ key: ip });
+    if (!success) return liveReply(request, 429, LIVE_MESSAGES.rate_limited);
+  } catch { /* rate limiter unavailable: the database also limits */ }
+  let result;
+  try {
+    result = await liveRpc('book_request', {
+      p_api_version: '1.1', p_request_id: requestId, p_slot_id: slotId,
+      p_name: get('fullName'), p_phone: get('phone'), p_email: get('email'), p_contact_pref: get('contactMethod'),
+      p_street: get('streetAddress'), p_unit: get('unit'), p_city: get('city'), p_zip: get('zip'),
+      p_service: LIVE_SERVICE[get('type')] || get('type'), p_preferred_time: 'any',
+      p_tech_visited_first: get('technicianVisit'), p_referred_by: get('referredBy'), p_referrer_phone: get('referrerPhone'),
+      p_notes: get('notes'), p_honeypot: '', p_client_ip: ip,
+    }, env, fetcher);
+  } catch (e) {
+    console.error('Live booking save failed', String(e?.message || e));
+    return liveReply(request, 503, "We couldn't send your request right now. Please try again in a few minutes, or call or text 620-869-1692.");
+  }
+  if (!result.ok) {
+    const code = result.error === 'unavailable' && result.reason === 'cancel_period' ? 'cancel_period' : result.error;
+    const status = ({ slot_taken: 409, unavailable: 409, cancel_period: 409, idempotency_conflict: 409, rate_limited: 429, invalid_request: 422 })[code] || 503;
+    const message = code === 'invalid_request' && LIVE_FIELDS[result.field] ? `Please check your ${LIVE_FIELDS[result.field]} and try again.`
+      : LIVE_MESSAGES[code] || "We couldn't send your request right now. Please try again in a few minutes, or call or text 620-869-1692.";
+    return liveReply(request, status, message, { code });
+  }
+  if (result.test === true) return liveReply(request, 503, "We couldn't send your request right now. Please call or text 620-869-1692.");
+  const slot = result.slot || {};
+  const done = result.delivery || {};
+  const booking = {
+    fullName: get('fullName'), phone: get('phone'), email: get('email'), contactMethod: get('contactMethod'),
+    technicianVisit: get('technicianVisit'), preferredTime: '', streetAddress: get('streetAddress'), unit: get('unit'),
+    city: get('city'), zip: get('zip'), date: slot.date, startHour: String(Number(String(slot.window || '').slice(0, 2))),
+    requestId, type: get('type'), notes: get('notes'),
+  };
+  const delivery = {};
+  let customerEmailSent = done.customer_email === 'sent';
+  // 1. Copy to the Google Sheet (it emails the customer). The shared calendar already decided the slot.
+  if (done.sheet !== 'ok') {
+    try {
+      const r = await sheet({ action: 'reserve', id: requestId, receivedAt: new Date().toISOString(), booking }, env);
+      if (r.ok === true) { delivery.sheet = 'ok'; customerEmailSent = r.customerEmailSent === true; }
+      else { delivery.sheet = r.code === 'slot_taken' ? 'slot_conflict' : 'failed'; delivery.last_error = 'sheet:' + String(r.code || 'rejected').slice(0, 40); }
+    } catch (e) { delivery.sheet = 'failed'; delivery.last_error = 'sheet:' + String(e?.message || e).slice(0, 80); }
+    delivery.customer_email = customerEmailSent ? 'sent' : 'not_sent';
+  }
+  // 2. Business email (once).
+  if (done.business_email !== 'sent') {
+    try {
+      const email = buildEmail({ id: requestId, receivedAt: result.received_at || new Date().toISOString(), booking }, env, !customerEmailSent);
+      const sheetState = delivery.sheet || done.sheet;
+      const note = [`Saved in the Prairie app as an online booking (ID ${result.booking_id}). Open the app to confirm it.`,
+        sheetState === 'ok' ? '' : sheetState === 'slot_conflict' ? 'The Google Sheet already had something in this window. The app calendar accepted it; check the sheet.' : 'This request was NOT copied to the Google Sheet. The app has it.'].filter(Boolean);
+      email.text = note.join('\n') + '\n\n' + email.text;
+      email.html = `<div style="font-family:Arial,sans-serif;padding:10px;background:#e8f2ff;color:#102d40;line-height:1.5">${note.join('<br>')}</div>` + email.html;
+      await env.BOOKING_EMAIL.send(email);
+      delivery.business_email = 'sent';
+    } catch (e) { delivery.business_email = 'failed'; delivery.last_error = 'email:' + String(e?.message || e).slice(0, 80); }
+  }
+  if (Object.keys(delivery).length) {
+    try { await liveRpc('booking_delivery', { p_booking_id: result.booking_id, p_delivery: delivery }, env, fetcher); }
+    catch (e) { console.error('Delivery record failed', result.booking_id, String(e?.message || e)); }
+  }
+  return liveReply(request, 200, '', { customerEmailSent, bookingId: result.booking_id });
+}
+
+var PLP_LIVE_ON = false;
+const LIVE_CLIENT_JS = "const form = document.getElementById('requestForm');\nconst calendar = document.getElementById('calendarDays');\nconst monthLabel = document.getElementById('calendarMonth');\nconst previousMonth = document.getElementById('previousMonth');\nconst nextMonth = document.getElementById('nextMonth');\nconst availabilityStatus = document.getElementById('availabilityStatus');\nconst retryCalendar = document.getElementById('retryCalendar');\nconst slotLabel = document.getElementById('slotDate');\nconst slotButtons = document.getElementById('slotButtons');\nconst selection = document.getElementById('selectedAppointment');\nconst submit = form.querySelector('button[type=\"submit\"]');\nconst status = document.getElementById('bookingStatus');\nconst fullDate = new Intl.DateTimeFormat('en-US', { dateStyle: 'full', timeZone: 'UTC' });\nconst monthFormat = new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });\nconst toDate = date => new Date(`${date}T00:00:00Z`);\nlet months = [];\nlet days = {};\nlet monthIndex = 0;\nlet date = '';\nlet submitting = false;\n\nfunction renderMonth() {\n  const month = months[monthIndex];\n  const first = toDate(`${month}-01`);\n  monthLabel.textContent = monthFormat.format(first);\n  previousMonth.disabled = monthIndex === 0;\n  nextMonth.disabled = monthIndex === months.length - 1;\n  calendar.replaceChildren();\n  for (let index = 0; index < first.getUTCDay(); index++) calendar.append(document.createElement('span'));\n  for (let day = first; day.toISOString().startsWith(month); day.setUTCDate(day.getUTCDate() + 1)) {\n    const key = day.toISOString().slice(0, 10);\n    const button = document.createElement('button');\n    button.type = 'button';\n    button.dataset.date = key;\n    button.className = days[key]?.length ? 'calendar-day available' : 'calendar-day';\n    button.textContent = day.getUTCDate();\n    button.setAttribute('aria-label', `${fullDate.format(day)}, ${days[key]?.length ? 'appointments available' : 'no appointments available'}`);\n    button.setAttribute('aria-pressed', String(date === key));\n    calendar.append(button);\n  }\n}\n\nfunction selectDay(key, focus = false) {\n  date = key;\n  form.elements.date.value = '';\n  form.elements.startHour.value = '';\n  form.elements.slotId.value = '';\n  form.elements.requestId.value = '';\n  submit.disabled = true;\n  selection.hidden = true;\n  slotButtons.replaceChildren();\n  slotLabel.textContent = key ? fullDate.format(toDate(key)) : 'Choose a date';\n  if (key && !days[key]?.length) {\n    const message = document.createElement('p');\n    message.className = 'calendar-message';\n    message.textContent = 'No appointments available';\n    slotButtons.append(message);\n  }\n  for (const slot of days[key] ?? []) {\n    const button = document.createElement('button');\n    button.type = 'button';\n    button.className = 'slot-button';\n    button.textContent = slot.label;\n    button.setAttribute('aria-pressed', 'false');\n    button.addEventListener('click', () => {\n      if (submitting) return;\n      for (const option of slotButtons.querySelectorAll('button')) option.setAttribute('aria-pressed', String(option === button));\n      form.elements.date.value = key;\n      form.elements.startHour.value = String(slot.startHour);\n      form.elements.slotId.value = slot.slotId;\n      form.elements.requestId.value = '';\n      selection.textContent = `${fullDate.format(toDate(key))} · ${slot.label} Central Time`;\n      selection.hidden = false;\n      status.hidden = true;\n      submit.disabled = false;\n    });\n    slotButtons.append(button);\n  }\n  renderMonth();\n  if (focus) calendar.querySelector(`[data-date=\"${key}\"]`)?.focus();\n}\n\nasync function liveRequestId() {\n  const data = new URLSearchParams(new FormData(form));\n  data.delete('requestId');\n  const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(data.toString()))), byte => byte.toString(16).padStart(2,'0')).join('');\n  const key='plp-last-request';\n  try {\n    const saved=JSON.parse(sessionStorage.getItem(key)||'null');\n    if(saved?.hash===hash && Date.now()-saved.created<86400000) return saved.id;\n  } catch {}\n  const id=crypto.randomUUID().replaceAll('-','');\n  try { sessionStorage.setItem(key,JSON.stringify({hash,id,created:Date.now()})); } catch {}\n  return id;\n}\n\nfunction visitAnswer() {\n  const f = form.elements.technicianVisit;\n  if (!f) return '';\n  if (f instanceof RadioNodeList || f.length) { for (const o of (f.length ? f : [f])) if (o.checked) return o.value; return f.value || ''; }\n  return f.value || '';\n}\nasync function loadAvailability(preferredDate = '') {\n  const visited = visitAnswer();\n  if (!['yes', 'no'].includes(visited)) {\n    calendar.replaceChildren(); slotButtons.replaceChildren(); submit.disabled = true; selection.hidden = true;\n    availabilityStatus.textContent = 'Answer “Did a Prairie Lint Patrol technician stop by your home before you booked?” to see open times.';\n    retryCalendar.hidden = true;\n    return;\n  }\n  availabilityStatus.textContent = 'Loading appointment times…';\n  retryCalendar.hidden = true;\n  try {\n    const response = await fetch('/api/availability?visited=' + visited, { cache: 'no-store' });\n    const data = await response.json();\n    if (!response.ok || !data.ok || !data.months.length) throw new Error('Unavailable');\n    months = data.months;\n    days = data.days;\n    const initialDate = preferredDate || Object.keys(days)[0] || `${months[0]}-01`;\n    monthIndex = Math.max(0, months.indexOf(initialDate.slice(0, 7)));\n    selectDay(initialDate);\n    const firstDate = toDate(data.first);\n    const start = new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' }).format(firstDate);\n    availabilityStatus.textContent = `No appointments available before ${start}. All times are Central.`;\n  } catch {\n    calendar.replaceChildren();\n    slotButtons.replaceChildren();\n    previousMonth.disabled = true;\n    nextMonth.disabled = true;\n    submit.disabled = true;\n    selection.hidden = true;\n    availabilityStatus.textContent = 'Appointment times couldn’t load. Try again, or call or text 620-869-1692.';\n    retryCalendar.hidden = false;\n  }\n}\n\ncalendar.addEventListener('click', event => {\n  const day = event.target.closest('button[data-date]');\n  if (day && !submitting) selectDay(day.dataset.date, true);\n});\nfor (const [button, direction] of [[previousMonth, -1], [nextMonth, 1]]) {\n  button.addEventListener('click', () => {\n    if (submitting) return;\n    monthIndex += direction;\n    const month = months[monthIndex];\n    selectDay(Object.keys(days).find(key => key.startsWith(month)) || `${month}-01`);\n  });\n}\nretryCalendar.addEventListener('click', () => loadAvailability(date));\nform.addEventListener('input', () => { if (!submitting) form.elements.requestId.value = ''; });\nform.addEventListener('change', event => { if (event.target.name === 'technicianVisit' && !submitting) loadAvailability(); });\nform.addEventListener('submit', async event => {\n  event.preventDefault();\n  if (submitting || !form.elements.slotId.value) return;\n  submitting = true;\n  submit.disabled = true;\n  form.elements.requestId.value ||= await liveRequestId();\n  status.hidden = false;\n  status.textContent = 'Sending your request…';\n  try {\n    const response = await fetch(form.action, {\n      method: 'POST', body: new URLSearchParams(new FormData(form)), headers: { Accept: 'application/json' },\n    });\n    const result = await response.json();\n    if (response.ok && result.ok) {\n      status.textContent = 'Request received. One moment…';\n      location.href = result.customerEmailSent ? '/thanks' : '/thanks?email=pending';\n      return;\n    }\n    status.textContent = result.message || 'We couldn’t send your request. Please try again.';\n    if (response.status === 409 && ['slot_taken','unavailable','cancel_period'].includes(result.code)) await loadAvailability(date);\n  } catch {\n    status.textContent = 'We couldn’t confirm your request. Please press Send again — you won’t be booked twice — or call or text 620-869-1692.';\n  }\n  submitting = false;\n  submit.disabled = !form.elements.slotId.value;\n});\n\nloadAvailability();\n";
+const plpBeforeLive = worker_default.fetch.bind(worker_default);
+worker_default.fetch = async function(request, env, ctx) {
+  PLP_LIVE_ON = !!env.PLP_BOOKING_LIVE_KEY;
+  const url = new URL(request.url);
+  if (!PLP_LIVE_ON || url.protocol !== 'https:' || url.hostname.startsWith('www.')) return plpBeforeLive(request, env, ctx);
+  const liveEnv = { ...env, PLP_SUPABASE_PUBLISHABLE_KEY: PLP_TEST_PUBLIC_KEY };
+  if (url.pathname === '/api/availability') return liveAvailability(request, liveEnv);
+  if (url.pathname === '/api/booking') return liveBooking(request, liveEnv);
+  if (url.pathname === '/booking-app.js') return new Response(LIVE_CLIENT_JS, { headers: { 'Cache-Control': 'no-cache', 'Content-Type': 'text/javascript; charset=utf-8' } });
+  const response = await plpBeforeLive(request, env, ctx);
+  if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html') && response.headers.get('Content-Type')?.includes('text/html')) {
+    const out = new HTMLRewriter()
+      .on('script[src="/assets/appointments.js"]', { element(el) { el.setAttribute('src', '/booking-app.js'); } })
+      .on('#requestForm', { element(el) { el.append('<input type="hidden" name="slotId">', { html: true }); } })
+      .transform(response);
+    out.headers.delete('ETag'); out.headers.set('Cache-Control', 'no-cache');
+    return out;
+  }
+  return response;
 };

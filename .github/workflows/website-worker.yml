@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'deploy | check | test-booking | rollback'
+        description: 'deploy | go-live | check | test-booking | rollback'
         required: true
         default: check
       version_id:
@@ -45,8 +45,20 @@ jobs:
           echo "Live version details (no secrets): $(jq -c '.result | {resources: (.resources | del(.bindings)), metadata}' version.json | head -c 3000)"
           api /assets-config > assets-config.json 2>/dev/null || true
           echo "Assets config endpoint: $(head -c 600 assets-config.json)"
+      - name: Create the live booking key (go-live only; nobody sees it)
+        if: inputs.action == 'go-live'
+        env: { SB_KEY: 'sb_publishable_T64NN7ipoQrgR3spNDG1Gw_fn9zT1x4' }
+        run: |
+          umask 077
+          KEY="plp_live_$(openssl rand -hex 24)"
+          echo "::add-mask::$KEY"
+          HASH=$(printf '%s' "$KEY" | sha256sum | cut -d' ' -f1)
+          R=$(curl -sS -X POST "https://bhouipoucvprekksdbjd.supabase.co/rest/v1/rpc/enroll_live_key" -H "apikey: $SB_KEY" -H 'Content-Type: application/json' -d "{\"p_hash\":\"$HASH\"}")
+          echo "Registered with the shared calendar: $R"
+          echo "$R" | jq -e '.ok == true' > /dev/null || { echo "Could not register the live key; stopping without changes."; exit 1; }
+          jq -n --arg k "$KEY" '[{type:"secret_text", name:"PLP_BOOKING_LIVE_KEY", text:$k}]' > "$RUNNER_TEMP/live-binding.json"
       - name: Deploy new version
-        if: inputs.action == 'deploy'
+        if: inputs.action == 'deploy' || inputs.action == 'go-live'
         id: deploy
         env: { CF_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
         run: |
@@ -54,17 +66,18 @@ jobs:
           RWF=$(jq -c '.result.resources.script_runtime.assets.raw_run_worker_first // empty' version.json)
           test -n "$RWF" || { echo "Could not read the live file-routing rule; stopping without changes."; exit 1; }
           echo "Keeping file-routing rule: $RWF"
-          jq -n --slurpfile s settings.json --argjson rwf "$RWF" '{
+          NEWB='[]'; [ -f "$RUNNER_TEMP/live-binding.json" ] && NEWB=$(cat "$RUNNER_TEMP/live-binding.json")
+          jq -n --slurpfile s settings.json --argjson rwf "$RWF" --argjson nb "$NEWB" '{
             main_module: "worker.js",
             compatibility_date: $s[0].result.compatibility_date,
             compatibility_flags: ($s[0].result.compatibility_flags // []),
             keep_assets: true,
             assets: { config: { run_worker_first: $rwf } },
             keep_bindings: ([$s[0].result.bindings[].type] | unique),
-            bindings: [],
-            annotations: { "workers/message": "Add /booking-test (Booking API v1.1 TEST)" }
+            bindings: $nb,
+            annotations: { "workers/message": "Website booking -> shared calendar (live booking v1)" }
           }' > metadata.json
-          echo "Upload settings: $(jq -c . metadata.json)"
+          echo "Upload settings: $(jq -c '.bindings |= map({type, name})' metadata.json)"
           curl -sS -X POST "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/scripts/$SCRIPT/versions" \
             -H "Authorization: Bearer $CF_TOKEN" \
             -F "metadata=@metadata.json;type=application/json" \
@@ -75,7 +88,7 @@ jobs:
           echo "new=$NEW" >> "$GITHUB_OUTPUT"
           curl -sS -X POST "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/scripts/$SCRIPT/deployments" \
             -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
-            -d "{\"strategy\":\"percentage\",\"versions\":[{\"percentage\":100,\"version_id\":\"$NEW\"}],\"annotations\":{\"workers/message\":\"Booking API v1.1 TEST page\"}}" > deploy.json
+            -d "{\"strategy\":\"percentage\",\"versions\":[{\"percentage\":100,\"version_id\":\"$NEW\"}],\"annotations\":{\"workers/message\":\"${{ inputs.action }}\"}}" > deploy.json
           jq -e '.success' deploy.json > /dev/null || { jq '.errors' deploy.json; exit 1; }
           curl -sS -H "Authorization: Bearer $CF_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/scripts/$SCRIPT/versions/$NEW" > newversion.json
           echo "New version file routing: $(jq -c '.result.resources.script_runtime.assets' newversion.json)"
@@ -96,10 +109,17 @@ jobs:
           code=$(get /booking-test); if grep -q 'TEST BOOKING FORM' body.txt; then echo "OK test page"; else echo "test page not present ($code)"; [ "${{ inputs.action }}" = deploy ] && fail=1; fi
           code=$(get /booking-test-app.js); if grep -q 'visited=' body.txt; then echo "OK test page script"; else echo "test page script missing ($code)"; [ "${{ inputs.action }}" = deploy ] && fail=1; fi
           code=$(get '/api/test/availability?visited=no'); if grep -q '"ok":true' body.txt; then echo "OK test calendar: $(jq -c '{first, days: (.days|length)}' body.txt)"; else echo "test calendar: $code $(head -c 200 body.txt)"; [ "${{ inputs.action }}" = deploy ] && fail=1; fi
+          if [ "${{ inputs.action }}" = go-live ] || grep -q '/booking-app.js' <(curl -sS "$SITE/"); then
+            code=$(get /); if grep -q '/booking-app.js' body.txt && ! grep -q 'preferredTime' body.txt && grep -q 'name="slotId"' body.txt; then echo "OK live form uses the shared calendar"; else echo "FAIL live form not switched"; fail=1; fi
+            code=$(get /booking-app.js); grep -q 'api/availability?visited=' body.txt && echo "OK live form script" || { echo "FAIL live form script ($code)"; fail=1; }
+            code=$(get '/api/availability?visited=no'); if jq -e '.ok == true and .timeZone == "America/Chicago" and ([.days[][]] | length > 0) and ([.days[][] | .slotId] | all)' body.txt > /dev/null; then echo "OK live calendar from shared calendar: $(jq -c '{first, days: (.days|length)}' body.txt)"; else echo "FAIL live calendar: $(head -c 300 body.txt)"; fail=1; fi
+            code=$(curl -sS -o body.txt -w '%{http_code}' -X POST "$SITE/api/booking" -H "Origin: $SITE" -H 'Accept: application/json' -H 'Content-Type: application/x-www-form-urlencoded' --data 'requestId=check&technicianVisit=no')
+            if [ "$code" = 422 ] && grep -q 'refresh the page' body.txt; then echo "OK live booking handler (validation only, nothing saved)"; else echo "FAIL live booking handler ($code): $(head -c 200 body.txt)"; fail=1; fi
+          fi
           echo "failed=$fail" >> "$GITHUB_OUTPUT"
           exit $fail
       - name: Roll back automatically if a check failed
-        if: failure() && inputs.action == 'deploy' && steps.state.outputs.prev != ''
+        if: failure() && (inputs.action == 'deploy' || inputs.action == 'go-live') && steps.deploy.outputs.new != '' && steps.state.outputs.prev != ''
         env: { CF_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
         run: |
           curl -sS -X POST "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/scripts/$SCRIPT/deployments" \
