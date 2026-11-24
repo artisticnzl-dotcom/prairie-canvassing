@@ -126,7 +126,7 @@
     top.appendChild(el('h2', 'center', justSigned ? 'Thank you — your agreement is signed' : 'Your signed agreement'));
     top.appendChild(el('p', 'center', 'Signed by ' + res.signer_name + ' on ' + new Date(res.signed_at).toLocaleString('en-US', { dateStyle: 'long', timeStyle: 'short' }) + '.'));
     if (res.cancel_by) top.appendChild(el('p', 'center', 'You can cancel until midnight of ' + PJ.longDate(res.cancel_by) + '. Your two Notice of Cancellation forms are at the bottom of this page.'));
-    top.appendChild(el('p', 'center', 'Your service is scheduled for ' + PJ.longDate(p.job.service_date) + (p.job.service_window ? ', ' + p.job.service_window.toLowerCase() : '') + '.'));
+    top.appendChild(el('p', 'center', 'Your service is scheduled for ' + PJ.whenText(p.job.service_date, p.job.service_window) + '.'));
     top.appendChild(el('p', 'center muted', 'Please save or print a copy now. This page stays available for 90 days.'));
     const b = el('div', 'row');
     b.style.justifyContent = 'center';
@@ -160,7 +160,7 @@
     const r = PJ.renderAgreement(ctxFor(p, tx));
     const intro = card();
     intro.appendChild(el('p', 'lead', 'Hi ' + (p.customer.first_name || 'there') + ', please review your service agreement with ' + b.name + ', then sign at the bottom.'));
-    intro.appendChild(el('p', '', 'Total: ' + PJ.money(r.total_cents) + ' · Scheduled for ' + PJ.longDate(p.job.service_date) + (p.job.service_window ? ', ' + p.job.service_window.toLowerCase() : '') + '.'));
+    intro.appendChild(el('p', '', 'Total: ' + PJ.money(r.total_cents) + ' · Scheduled for ' + PJ.whenText(p.job.service_date, p.job.service_window) + '.'));
     intro.appendChild(el('p', 'muted', 'Please sign by ' + PJ.longDate(p.sign_by) + '. Questions? Call or text ' + b.phone + '.'));
     const doc = el('div', 'doc');
     renderDoc(doc, r.text);

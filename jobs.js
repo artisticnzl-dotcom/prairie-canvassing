@@ -81,7 +81,7 @@
   const WINDOWS = ['Any time', 'Morning', 'Afternoon', 'Evening'];
   function jobWhen(j) {
     if (j.status === 'awaiting') return 'Waiting for the customer to sign · ' + PJ.longDate(j.service_date);
-    const d = PJ.longDate(j.service_date) + (j.service_window ? ', ' + j.service_window.toLowerCase() : '');
+    const d = PJ.whenText(j.service_date, j.service_window);
     if (j.status === 'signed' && j.timing === 'scheduled') return 'Scheduled · ' + d;
     if (j.status === 'signed' && j.timing === 'now') return 'Signed — doing the work today · ' + d;
     return STATUS[j.status] + ' · ' + d;
@@ -371,7 +371,7 @@
           const choiceBox = el('div', '');
           const when = el('div', '');
           d.append(choiceBox, when);
-          let dateField = null;
+          let dateField = null, timeField = null;
           const drawTiming = () => {
             const req = PJ.isRequested(j);
             tip.textContent = req ? 'Ask the customer which they prefer.'
@@ -385,7 +385,7 @@
             drawWhen = () => {
               style();
               when.innerHTML = '';
-              dateField = null;
+              dateField = null; timeField = null;
               if (j.timing === 'now') { j.service_date = today; j.service_window = ''; }
               if (j.timing === 'now' && !PJ.isRequested(j)) {
                 when.appendChild(el('p', 'tip', 'Why can the work be done today?'));
@@ -411,7 +411,9 @@
                 load.textContent = !PJ.parseYmd(j.service_date) ? '' : n ? 'The crew already has ' + n + (n === 1 ? ' job' : ' jobs') + ' that day.' : 'No other crew jobs that day yet.';
               };
               showLoad();
-              select(when, 'Time of day', WINDOWS, j.service_window || 'Any time', v => { j.service_window = v === 'Any time' ? '' : v; });
+              if (!PJ.isClockTime(j.service_window)) j.service_window = '';   // older jobs used Morning/Afternoon
+              timeField = input(when, 'Appointment time', PJ.to24h(j.service_window), { type: 'time', onInput: v => { j.service_window = PJ.to12h(v); if (timeField) timeField.showError(''); } });
+              timeField.step = 900;
               const url = business().booking_url;
               if (url) {
                 const a = el('a', 'plain', 'Check open dates on the website');
@@ -442,6 +444,7 @@
               }
             }
             if (j.timing === 'scheduled' && !(PJ.parseYmd(j.service_date) && j.service_date >= firstDate())) return dateField.showError('Pick a date on or after ' + PJ.longDate(firstDate()) + '.');
+            if (j.timing === 'scheduled' && !PJ.isClockTime(j.service_window)) return timeField.showError('Pick the appointment time.');
             persist().then(() => go(1));
           }));
         },
@@ -859,7 +862,7 @@
         }
         k.appendChild(el('p', 'big', (fresh ? 'Now send the link. ' : '') + 'The customer signs on their own phone.'));
         k.appendChild(el('p', '', serviceSummary(cur) + ' · ' + PJ.money(cur.total_cents || PJ.totals(cur.services, cur.adjustments).total)));
-        k.appendChild(el('p', '', 'Scheduled for ' + PJ.longDate(cur.service_date) + (cur.service_window ? ', ' + cur.service_window.toLowerCase() : '') + '.'));
+        k.appendChild(el('p', '', 'Scheduled for ' + PJ.whenText(cur.service_date, cur.service_window) + '.'));
         k.appendChild(el('p', 'tip warn', 'They must sign by ' + PJ.longDate(sr.payload.sign_by) + ' so the 3-day cancel period ends before the visit. The link stops working after that.'));
         const msg = signMessage(c, cur, sr);
         const r = row(k);
@@ -970,7 +973,7 @@
           : 'Give the customer their copy now (share, email, or text it).'));
         if (j.timing === 'scheduled') {
           const s = card(body, 'Scheduled');
-          s.appendChild(el('p', 'big', PJ.longDate(j.service_date) + (j.service_window ? ', ' + j.service_window.toLowerCase() : '')));
+          s.appendChild(el('p', 'big', PJ.whenText(j.service_date, j.service_window)));
           s.appendChild(el('p', 'muted', 'The job is under Customers → Jobs in progress. Add it to your calendar or booking system too.'));
           foot.appendChild(button('Done', 'primary big', () => { closePage(); A.showTab('customers'); }));
         } else {

@@ -104,6 +104,14 @@
    */
   const REQUEST_METHODS = ['Phone call', 'Text message', 'Website booking', 'Email', 'Social media message', 'Other'];
   /** True when the customer asked us to come (no 3-day right for that requested maintenance visit). */
+  /** "2:30 PM" style appointment times; older jobs may have Morning/Afternoon/Evening. */
+  function isClockTime(w) { return /^\d{1,2}:\d{2} ?(AM|PM)$/i.test(String(w || '').trim()); }
+  /** The words after a date: " at 2:30 PM" or ", morning" (older jobs), or "". */
+  function windowSuffix(w) { return !w ? '' : isClockTime(w) ? ' at ' + String(w).trim().toUpperCase() : ', ' + String(w).toLowerCase(); }
+  function whenText(dateYmd, w) { return longDate(dateYmd) + windowSuffix(w); }
+  /** "14:30" → "2:30 PM" and back, for time inputs. */
+  function to12h(hhmm) { const m = /^(\d{1,2}):(\d{2})/.exec(hhmm || ''); if (!m) return ''; const h = +m[1]; return ((h + 11) % 12 + 1) + ':' + m[2] + ' ' + (h < 12 ? 'AM' : 'PM'); }
+  function to24h(t) { const m = /^(\d{1,2}):(\d{2}) ?(AM|PM)$/i.exec(String(t || '').trim()); if (!m) return ''; let h = +m[1] % 12; if (/pm/i.test(m[3])) h += 12; return String(h).padStart(2, '0') + ':' + m[2]; }
   function isRequested(j) { return !!j && j.origin === 'customer_request'; }
   /** Ways a customer can ask us to come out for work done today. */
   const TODAY_METHODS = ['Phone call', 'Text message', 'Email', 'Website booking'];
@@ -122,7 +130,7 @@
       transaction_date: longDate(ctx.transaction_date), seller_name: b.name.toUpperCase(),
       seller_address: businessAddress(b).toUpperCase(), cancel_by: longDate(cancel).toUpperCase(),
       cancel_by_date: longDate(cancel), service_date: longDate(j.service_date),
-      service_window: j.service_window ? ', ' + String(j.service_window).toLowerCase() : '',
+      service_window: windowSuffix(j.service_window),
       request_date: rq.date ? longDate(rq.date) : '', request_method: requestMethodText(rq.method),
     };
     const why = t.timing && t.timing.now_reasons && t.timing.now_reasons[rq.reason];
@@ -139,7 +147,7 @@
     const contact = [c.phone ? 'Phone: ' + c.phone : '', c.email ? 'Email: ' + c.email : ''].filter(Boolean).join(' · ');
     if (contact) L.push(contact);
     L.push('Service address: ' + serviceAddress(c));
-    L.push('Service date: ' + longDate(j.service_date) + (j.service_window ? ' (' + String(j.service_window).toLowerCase() + ')' : ''));
+    L.push('Service date: ' + longDate(j.service_date) + (!j.service_window ? '' : isClockTime(j.service_window) ? ' at ' + String(j.service_window).trim().toUpperCase() : ' (' + String(j.service_window).toLowerCase() + ')'));
     L.push('');
     L.push('SERVICES');
     for (const s of j.services) {
@@ -179,7 +187,7 @@
     const d = parseYmd(cancelBy(transactionYmd)); d.setDate(d.getDate() + 1); return ymd(d);
   }
 
-  const api = { REQUEST_METHODS, TODAY_METHODS, TODAY_REASONS, isRequested, requestMethodText, firstScheduleDate, DEFAULT_BUSINESS, MONTHS, money, parseMoney, lineCents, totals, ymd, parseYmd, longDate, holidays, isBusinessDay,
+  const api = { isClockTime, windowSuffix, whenText, to12h, to24h, REQUEST_METHODS, TODAY_METHODS, TODAY_REASONS, isRequested, requestMethodText, firstScheduleDate, DEFAULT_BUSINESS, MONTHS, money, parseMoney, lineCents, totals, ymd, parseYmd, longDate, holidays, isBusinessDay,
     cancelBy, fill, cityLine, fullName, serviceAddress, businessAddress, renderAgreement, agreementNo };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.PJ = api;
 })(typeof self !== 'undefined' ? self : this);
