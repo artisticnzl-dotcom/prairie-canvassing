@@ -196,6 +196,11 @@
     // Unfinished work first, so nothing gets lost
     const open = [...jobs.values()].filter(j => live(j) && ['awaiting', 'draft', 'signed', 'inspecting'].includes(j.status) && live(customers.get(j.customer_id)))
       .sort((a, b) => (a.status === 'draft') - (b.status === 'draft') || (a.service_date || '').localeCompare(b.service_date || '') || b.updated_at - a.updated_at);
+    const owedRefs = [...jobs.values()].filter(j => live(j) && referralState(j) === 'owed' && live(customers.get(j.customer_id)));
+    if (!customerQuery && [...jobs.values()].some(j => live(j) && hasReferral(j))) {
+      list.appendChild(listRow('Referral rewards', owedRefs.length ? owedRefs.length + ' to pay · ' + PJ.money(owedRefs.reduce((t, j) => t + refAmount(j), 0)) : 'Nothing owed right now',
+        '', () => referralsPage()));
+    }
     if (open.length && !customerQuery) {
       list.appendChild(el('div', 'day', 'Jobs in progress'));
       for (const j of open.slice(0, 10)) {
@@ -243,7 +248,7 @@
       id: uuid(), customer_id: customer.id, door_id: doorId || null, service_date: PJ.ymd(new Date()), status: 'draft',
       services: b.services.filter(s => s.default).map(s => ({ name: s.name, description: s.description, qty: 1, price_cents: s.price_cents })),
       adjustments: [], total_cents: 0, payment_status: 'unpaid', payment_method: '', payment_note: '', technician: technician(),
-      inspection: {}, photos: [], agreement_id: null, report_path: '', report_at: 0, deleted: false,
+      inspection: {}, photos: [], agreement_id: null, report_path: '', report_at: 0, deleted: false, referral: {},
     };
   }
   function startNew(prefill) {
@@ -425,6 +430,13 @@
           };
           let drawWhen = () => {};
           drawTiming();
+          if (!j.referral || typeof j.referral !== 'object') j.referral = {};
+          if (rewardCents() > 0 || hasReferral(j)) {
+            const ref = card(d, 'Referred by someone? (optional)');
+            ref.appendChild(el('p', 'tip', 'We pay ' + PJ.money(rewardCents()) + ' to the person who referred them once this job is paid.'));
+            input(ref, 'Their name', j.referral.name || '', { max: 100, onInput: v => { setReferral(j, { name: v.trim() }); } });
+            input(ref, 'Their phone (to pay them)', j.referral.phone || '', { type: 'tel', max: 40, onInput: v => { setReferral(j, { phone: v.trim() }); } });
+          }
           input(d, 'Notes about this customer (optional)', c.notes, { multi: true, rows: 2, max: 2000, onInput: v => { c.notes = v; } });
           foot.appendChild(button('Next: services & price', 'primary big', () => {
             if (!c.first_name.trim()) return f.showError('Enter the first name.');
@@ -1176,6 +1188,10 @@
       d.textWithLink(rurl.split('?')[0], x, top + 108, { url: rurl });
       st.y = top + 140;
     }
+    if (rewardCents() > 0) {
+      pdfNeed(st, 40);
+      pdfText(st, 'Know someone who needs their dryer vent cleaned? Send them our way. When they book and pay for a cleaning, we’ll pay you ' + PJ.money(rewardCents()) + ' as a thank-you. Just have them mention your name.', { size: 11, bold: true, after: 6 });
+    }
     // photos, two per page
     const photos = j.photos || [];
     for (let i = 0; i < photos.length; i++) {
@@ -1448,7 +1464,95 @@
         r.appendChild(button('Edit inspection', '', () => inspection(j.id)));
         reviewCard(body, c);
         paymentCard(body, j);
+        referralCard(body, j);
         foot.appendChild(button('Done', 'primary big', () => openCustomer(c.id)));
+      },
+    });
+  }
+
+  // ================================================================ referral rewards
+  function rewardCents() { const v = business().referral_reward_cents; return Number.isFinite(v) && v >= 0 ? v : 2500; }
+  function setReferral(j, patch) {
+    const r = Object.assign({}, j.referral || {}, patch);
+    if (!r.name && !r.phone) { j.referral = {}; return; }
+    if (!r.status) r.status = 'pending';
+    if (!r.amount_cents && r.status === 'pending') r.amount_cents = rewardCents();
+    j.referral = r;
+  }
+  function hasReferral(j) { return !!(j && j.referral && j.referral.name); }
+  /** 'owed' once the referred customer's job is paid; 'paid' once we paid the reward. */
+  function referralState(j) {
+    if (!hasReferral(j) || j.referral.status === 'void' || j.status === 'cancelled' || j.status === 'draft' || j.status === 'awaiting') return '';
+    if (j.referral.status === 'paid') return 'paid';
+    if (j.payment_status !== 'paid') return 'waiting';
+    const d = cancelDeadline(j);   // not while the customer can still cancel for a refund
+    return d && PJ.ymd(new Date()) <= d ? 'cancel' : 'owed';
+  }
+  function refAmount(j) { return j.referral.amount_cents || rewardCents(); }
+  function referralCard(body, j) {
+    if (!hasReferral(j)) return;
+    const r = j.referral, st = referralState(j), amt = PJ.money(refAmount(j));
+    const k = card(body, 'Referral reward');
+    k.appendChild(el('p', 'big', r.name + (r.phone ? ' · ' + r.phone : '')));
+    if (st === 'paid') k.appendChild(el('p', '', 'Paid ' + amt + ' on ' + PJ.longDate(r.paid_at) + (r.paid_method ? ' by ' + r.paid_method : '') + '.'));
+    else if (st === 'owed') k.appendChild(el('p', 'tip warn', 'You owe ' + r.name + ' ' + amt + '. This customer has paid.'));
+    else if (st === 'waiting') k.appendChild(el('p', 'tip', amt + ' will be owed to ' + r.name + ' once this job is paid.'));
+    else if (st === 'cancel') k.appendChild(el('p', 'tip', 'The customer has paid. ' + amt + ' will be owed to ' + r.name + ' after their cancel period ends at midnight of ' + PJ.longDate(cancelDeadline(j)) + '.'));
+    else k.appendChild(el('p', 'tip', r.status === 'void' ? 'No reward for this job.' : 'The reward counts once the job is signed and paid.'));
+    const rr = row(k);
+    const setR = patch => saveJob(Object.assign({}, jobs.get(j.id), { referral: Object.assign({}, jobs.get(j.id).referral, patch) }));
+    if (st === 'owed') {
+      const methods = ['Cash', 'Check', 'Venmo', 'Cash App', 'Zelle', 'PayPal', 'Gift card', 'Other'];
+      let method = 'Cash';
+      select(k, 'Paid by', methods, method, v => { method = v; });
+      rr.remove();
+      const r2 = row(k);
+      r2.appendChild(button('Mark ' + amt + ' paid', 'primary', async () => { await setR({ status: 'paid', paid_at: PJ.ymd(new Date()), paid_method: method }); toast('Reward marked paid.'); }));
+      r2.appendChild(button('No reward for this one', '', () => setR({ status: 'void' })));
+      return;
+    }
+    if (st === 'paid') rr.appendChild(button('Undo paid', '', () => setR({ status: 'pending', paid_at: '', paid_method: '' })));
+    if (st === 'waiting' || st === 'cancel') rr.appendChild(button('No reward for this one', '', () => setR({ status: 'void' })));
+    if (r.status === 'void') rr.appendChild(button('Give the reward after all', '', () => setR({ status: 'pending', amount_cents: refAmount(j) })));
+  }
+  /** Rewards owed and paid, with yearly totals per person (for taxes). */
+  function referralsPage() {
+    openPage({
+      title: 'Referral rewards', kicker: 'Customers', back: () => { closePage(); A.showTab('customers'); }, refresh: () => referralsPage(),
+      render(body) {
+        const list = [...jobs.values()].filter(j => live(j) && hasReferral(j) && live(customers.get(j.customer_id)));
+        const owed = list.filter(j => referralState(j) === 'owed'), waiting = list.filter(j => referralState(j) === 'waiting' || referralState(j) === 'cancel');
+        const paid = list.filter(j => referralState(j) === 'paid').sort((a, b) => (b.referral.paid_at || '').localeCompare(a.referral.paid_at || ''));
+        const sum = js => js.reduce((t, j) => t + refAmount(j), 0);
+        const k = card(body, 'Owed now (' + owed.length + ') · ' + PJ.money(sum(owed)));
+        if (!owed.length) k.appendChild(el('p', 'muted', 'Nothing owed right now.'));
+        owed.forEach(j => k.appendChild(listRow(j.referral.name + ' · ' + PJ.money(refAmount(j)),
+          'Referred ' + PJ.fullName(customers.get(j.customer_id)) + (j.referral.phone ? ' · ' + j.referral.phone : ''), 'Tap to pay', () => openJob(j.id))));
+        if (waiting.length) {
+          const w = card(body, 'Not due yet (' + waiting.length + ')');
+          waiting.forEach(j => w.appendChild(listRow(j.referral.name, 'Referred ' + PJ.fullName(customers.get(j.customer_id)),
+            referralState(j) === 'cancel' ? 'Due after ' + PJ.longDate(cancelDeadline(j)) : 'Customer hasn’t paid', () => openJob(j.id))));
+        }
+        const year = String(new Date().getFullYear());
+        const byPerson = new Map();
+        paid.filter(j => (j.referral.paid_at || '').startsWith(year)).forEach(j => {
+          const key = (j.referral.name.trim() + '|' + (j.referral.phone || '').replace(/\D/g, '')).toLowerCase();
+          const e = byPerson.get(key) || { name: j.referral.name, phone: j.referral.phone, cents: 0, n: 0 };
+          e.cents += refAmount(j); e.n++;
+          byPerson.set(key, e);
+        });
+        const t = card(body, 'Paid in ' + year + ' · ' + PJ.money([...byPerson.values()].reduce((a, e) => a + e.cents, 0)));
+        if (!byPerson.size) t.appendChild(el('p', 'muted', 'No rewards paid yet this year.'));
+        [...byPerson.values()].sort((a, b) => b.cents - a.cents).forEach(e => {
+          t.appendChild(el('p', '', e.name + (e.phone ? ' (' + e.phone + ')' : '') + ': ' + PJ.money(e.cents) + ' for ' + e.n + ' referral' + (e.n === 1 ? '' : 's') +
+            (e.cents >= 200000 ? ' — at the 1099-NEC limit; ask your tax preparer.' : e.cents >= 150000 ? ' — getting close to the 1099 limit; get their W-9.' : '')));
+        });
+        t.appendChild(el('p', 'tip', 'Use this list for your taxes (referral fees). Anyone you pay $2,000 or more in a year may need a 1099-NEC; ask your tax preparer.'));
+        if (paid.length) {
+          const h = card(body, 'Payment history');
+          paid.slice(0, 200).forEach(j => h.appendChild(listRow(j.referral.name + ' · ' + PJ.money(refAmount(j)),
+            'Referred ' + PJ.fullName(customers.get(j.customer_id)), PJ.longDate(j.referral.paid_at) + (j.referral.paid_method ? ' · ' + j.referral.paid_method : ''), () => openJob(j.id))));
+        }
       },
     });
   }
@@ -1567,6 +1671,7 @@
           reviewCard(body, c);
         }
         paymentCard(body, j);
+        referralCard(body, j);
         const more = card(body, 'More');
         if (['signed', 'inspecting', 'completed'].includes(j.status)) {
           more.appendChild(button('+ More services needed', '', () => moreServices(j.id)));
@@ -1624,6 +1729,7 @@
         rvl.append(rvc, el('span', '', 'Allow customer-requested visits (attorney approved)'));
         rv.appendChild(rvl);
         input(k, 'Google review link (added to report messages)', v.review_url, { type: 'url', caps: 'off', onInput: x => { v.review_url = x.trim(); } });
+        input(k, 'Referral reward in dollars (0 turns it off)', String((Number.isFinite(v.referral_reward_cents) ? v.referral_reward_cents : 2500) / 100), { type: 'number', onInput: x => { const n = Math.round(parseFloat(x) * 100); v.referral_reward_cents = Number.isFinite(n) && n >= 0 ? n : 2500; } });
         input(k, 'Online booking page (shown when scheduling)', v.booking_url, { type: 'url', caps: 'off', onInput: x => { v.booking_url = x.trim(); } });
         input(k, 'Payment terms', v.payment_terms, { multi: true, rows: 2, onInput: x => { v.payment_terms = x; } });
         const s = card(body, 'Standard services and prices');
