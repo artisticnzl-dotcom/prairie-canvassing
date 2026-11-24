@@ -665,7 +665,8 @@ async function liveAvailability(request, env, fetcher = fetch) {
       if (!success) return Response.json({ ok: false }, { status: 429, headers: LIVE_HEADERS });
     }
     const v = new URL(request.url).searchParams.get('visited');
-    const visited = ['yes', 'no'].includes(v) ? v : null;
+    // Older pages ask without an answer: show next-day times; the booking itself still enforces the cancel period.
+    const visited = ['yes', 'no'].includes(v) ? v : 'no';
     const { first, last } = bookingBoundsLive();
     const chunks = [];
     for (let from = first; from <= last;) {

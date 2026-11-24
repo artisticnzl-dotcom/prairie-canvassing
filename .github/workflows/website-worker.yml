@@ -13,7 +13,7 @@ on:
         description: 'Version to roll back to (rollback only)'
         required: false
 permissions:
-  contents: read
+  contents: write
 concurrency: website-worker
 env:
   ACCOUNT: 672b9dfa4e1cae648b3248b7f0f34a12
@@ -100,6 +100,7 @@ jobs:
         if: inputs.action != 'rollback'
         run: |
           set -u
+          exec > >(tee -a "$RUNNER_TEMP/report.txt") 2>&1
           fail=0
           get() { curl -sS -L --max-time 20 -o body.txt -w '%{http_code}' -H 'Cache-Control: no-cache' "$SITE$1"; }
           code=$(get /); grep -q 'Prairie Lint Patrol' body.txt && grep -q 'plp-hero-prices' body.txt && grep -q 'closure-notice' body.txt && [ "$code" = 200 ] && echo "OK homepage" || { echo "FAIL homepage ($code)"; fail=1; }
@@ -149,3 +150,12 @@ jobs:
           echo "Replay: $(post)"
           echo "Second customer, same window:"
           rid="web_test_gh2_$(date +%s)"; post
+      - name: Save the results where Claude can read them (no secrets)
+        if: always()
+        run: |
+          { echo "Run ${{ github.run_number }} action=${{ inputs.action }} result=${{ job.status }} $(date -u +%FT%TZ)"; cat "$RUNNER_TEMP/report.txt" 2>/dev/null; } > /tmp/report.txt
+          git config user.name "website-worker"; git config user.email "actions@users.noreply.github.com"
+          git fetch -q origin workflow-reports 2>/dev/null && git checkout -q -B workflow-reports FETCH_HEAD || git checkout -q --orphan workflow-reports
+          git rm -rqf --cached . 2>/dev/null || true
+          cp /tmp/report.txt latest.txt; cp /tmp/report.txt "run-${{ github.run_number }}.txt"
+          git add latest.txt "run-${{ github.run_number }}.txt"; git commit -qm "Website Worker run ${{ github.run_number }}" && git push -q origin HEAD:workflow-reports || echo "Could not save report"
