@@ -70,11 +70,11 @@
   const Store = {
     db: null,
     mem: { visits: new Map(), meta: new Map(), chunks: new Map(), customers: new Map(), jobs: new Map(), interactions: new Map(),
-      agreements: new Map(), settings: new Map(), files: new Map(), sign_requests: new Map() },
+      agreements: new Map(), settings: new Map(), files: new Map(), sign_requests: new Map(), booking_requests: new Map() },
     open() {
       return new Promise(res => {
         let req;
-        try { req = indexedDB.open('prairie-canvassing', 4); } catch (e) { res(false); return; }
+        try { req = indexedDB.open('prairie-canvassing', 5); } catch (e) { res(false); return; }
         req.onupgradeneeded = ev => {
           const d = req.result;
           if (ev.oldVersion < 1) {
@@ -89,6 +89,7 @@
           }
           if (ev.oldVersion < 3) d.createObjectStore('interactions', { keyPath: 'id' }); // every door outcome, for Stats
           if (ev.oldVersion < 4) d.createObjectStore('sign_requests', { keyPath: 'id' }); // agreements sent to customers to sign on their phone
+          if (ev.oldVersion < 5) d.createObjectStore('booking_requests', { keyPath: 'id' }); // requests from the website booking form
         };
         req.onsuccess = () => { Store.db = req.result; res(true); };
         req.onerror = () => res(false);
@@ -231,6 +232,11 @@
         }
       }
       return this.session.access_token;
+    },
+    /** Calls a database function (needs the crew login). */
+    async rpc(name, args) {
+      if (!this.configured || !this.session) throw new Error('not signed in');
+      return (await this.rest('rpc/' + name, { method: 'POST', body: JSON.stringify(args || {}) })).json();
     },
     async rest(path, opts) {
       const tok = await this.token();

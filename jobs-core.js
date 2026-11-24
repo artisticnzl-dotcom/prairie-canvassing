@@ -6,7 +6,7 @@
 
   const DEFAULT_BUSINESS = {
     name: 'Prairie Lint Patrol', street: '506 Clover Ln', city: 'Hesston', state: 'KS', zip: '67062',
-    phone: '620-869-1692', email: 'prairielintpatrol@gmail.com', website: 'PrairieLintPatrol.com', booking_url: 'https://prairielintpatrol.com/#book', requested_visits: false, review_url: 'https://g.page/r/CcnmULVFXxSkEBM/review', referral_reward_cents: 2500,
+    phone: '620-869-1692', email: 'prairielintpatrol@gmail.com', website: 'PrairieLintPatrol.com', booking_url: 'https://prairielintpatrol.com/#book', requested_visits: false, review_url: 'https://g.page/r/CcnmULVFXxSkEBM/review', referral_reward_cents: 2500, tax_1099_thresholds: { 2026: 200000 },
     payment_terms: 'Payment is due when the work is completed. We accept check, card, or ACH bank transfer.',
     services: [
       { name: 'Standard Dryer Vent Cleaning', description: 'Clean the dryer vent line from the dryer connection to the exterior termination, where accessible.', price_cents: 14900, default: true },
@@ -107,7 +107,15 @@
   /** "2:30 PM" style appointment times; older jobs may have Morning/Afternoon/Evening. */
   function isClockTime(w) { return /^\d{1,2}:\d{2} ?(AM|PM)$/i.test(String(w || '').trim()); }
   /** The words after a date: " at 2:30 PM" or ", morning" (older jobs), or "". */
-  function windowSuffix(w) { return !w ? '' : isClockTime(w) ? ' at ' + String(w).trim().toUpperCase() : ', ' + String(w).toLowerCase(); }
+  /** Arrival windows, stored as "10:00-12:00" (24-hour, Central time). */
+  const ARRIVAL_WINDOWS = ['08:00-10:00', '10:00-12:00', '12:00-14:00', '14:00-16:00', '16:00-18:00', '18:00-20:00'];
+  function isArrivalWindow(w) { return /^\d{2}:\d{2}-\d{2}:\d{2}$/.test(String(w || '').trim()); }
+  function windowLabel(w) { if (!isArrivalWindow(w)) return String(w || ''); const [a, b] = String(w).trim().split('-'); return to12h(a) + ' – ' + to12h(b); }
+  function windowSuffix(w) {
+    if (!w) return '';
+    if (isArrivalWindow(w)) { const [a, b] = String(w).trim().split('-'); return ' between ' + to12h(a) + ' and ' + to12h(b); }
+    return isClockTime(w) ? ' at ' + String(w).trim().toUpperCase() : ', ' + String(w).toLowerCase();
+  }
   function whenText(dateYmd, w) { return longDate(dateYmd) + windowSuffix(w); }
   /** "14:30" → "2:30 PM" and back, for time inputs. */
   function to12h(hhmm) { const m = /^(\d{1,2}):(\d{2})/.exec(hhmm || ''); if (!m) return ''; const h = +m[1]; return ((h + 11) % 12 + 1) + ':' + m[2] + ' ' + (h < 12 ? 'AM' : 'PM'); }
@@ -147,7 +155,7 @@
     const contact = [c.phone ? 'Phone: ' + c.phone : '', c.email ? 'Email: ' + c.email : ''].filter(Boolean).join(' · ');
     if (contact) L.push(contact);
     L.push('Service address: ' + serviceAddress(c));
-    L.push('Service date: ' + longDate(j.service_date) + (!j.service_window ? '' : isClockTime(j.service_window) ? ' at ' + String(j.service_window).trim().toUpperCase() : ' (' + String(j.service_window).toLowerCase() + ')'));
+    L.push('Service date: ' + longDate(j.service_date) + (!j.service_window ? '' : isArrivalWindow(j.service_window) ? ' (arrival' + windowSuffix(j.service_window) + ')' : isClockTime(j.service_window) ? ' at ' + String(j.service_window).trim().toUpperCase() : ' (' + String(j.service_window).toLowerCase() + ')'));
     L.push('');
     L.push('SERVICES');
     for (const s of j.services) {
@@ -187,7 +195,7 @@
     const d = parseYmd(cancelBy(transactionYmd)); d.setDate(d.getDate() + 1); return ymd(d);
   }
 
-  const api = { isClockTime, windowSuffix, whenText, to12h, to24h, REQUEST_METHODS, TODAY_METHODS, TODAY_REASONS, isRequested, requestMethodText, firstScheduleDate, DEFAULT_BUSINESS, MONTHS, money, parseMoney, lineCents, totals, ymd, parseYmd, longDate, holidays, isBusinessDay,
+  const api = { ARRIVAL_WINDOWS, isArrivalWindow, windowLabel, isClockTime, windowSuffix, whenText, to12h, to24h, REQUEST_METHODS, TODAY_METHODS, TODAY_REASONS, isRequested, requestMethodText, firstScheduleDate, DEFAULT_BUSINESS, MONTHS, money, parseMoney, lineCents, totals, ymd, parseYmd, longDate, holidays, isBusinessDay,
     cancelBy, fill, cityLine, fullName, serviceAddress, businessAddress, renderAgreement, agreementNo };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.PJ = api;
 })(typeof self !== 'undefined' ? self : this);

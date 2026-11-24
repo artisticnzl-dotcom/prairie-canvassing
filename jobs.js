@@ -20,8 +20,11 @@
   const customers = new Map(), jobs = new Map(), agreements = new Map(), settings = new Map();
   const live = c => c && !c.deleted;
 
+  let roleAt = 0;
   function refresh() {
     processSignedRequests();
+    stampEligibility();
+    if (!myRole || Date.now() - roleAt > 600000) { roleAt = Date.now(); loadRole(); }
     if (!$('customersPanel').hidden) showCustomers();
     if (currentPage && currentPage.refresh) currentPage.refresh();
   }
@@ -31,14 +34,19 @@
   Sync.addTable({ name: 'agreements', map: agreements, changed: refresh, insertOnly: true });
   // Agreements sent to customers to sign on their own phone. Once signed, the customer's signature always wins.
   const signRequests = new Map();
+  // Booking requests from the website (created only by the booking form; the app confirms, converts or declines them).
+  const bookings = new Map();
+  Sync.addTable({ name: 'booking_requests', map: bookings, changed: refresh });
   Sync.addTable({ name: 'sign_requests', map: signRequests, changed: () => { processSignedRequests(); refresh(); },
     remoteWins: (local, v) => (v.status === 'signed' && (!local || local.status !== 'signed' || (!local.agreement_id && v.agreement_id))) || PC.remoteWins(local, v) });
 
   window.JobsInit = async () => {
-    for (const [name, m] of [['customers', customers], ['jobs', jobs], ['agreements', agreements], ['settings', settings], ['sign_requests', signRequests]]) {
+    for (const [name, m] of [['customers', customers], ['jobs', jobs], ['agreements', agreements], ['settings', settings], ['sign_requests', signRequests], ['booking_requests', bookings]]) {
       try { (await Store.all(name)).forEach(r => m.set(r.id, r)); } catch (e) { /* first run */ }
     }
     processSignedRequests();
+    loadRole();
+    setInterval(() => { if (!myRole && navigator.onLine) loadRole(); }, 10000);   // until the first sign-in tells us the role
   };
 
   function business() {
@@ -200,6 +208,15 @@
     if (!customerQuery && [...jobs.values()].some(j => live(j) && hasReferral(j))) {
       list.appendChild(listRow('Referral rewards', owedRefs.length ? owedRefs.length + ' to pay · ' + PJ.money(owedRefs.reduce((t, j) => t + refAmount(j), 0)) : 'Nothing owed right now',
         '', () => referralsPage()));
+    }
+    const newBookings = [...bookings.values()].filter(b => !b.deleted && (b.status === 'requested' || b.status === 'confirmed'))
+      .sort((a, b) => (a.slot_date + a.slot_window).localeCompare(b.slot_date + b.slot_window));
+    if (newBookings.length && !customerQuery) {
+      list.appendChild(el('div', 'day', 'New online bookings (' + newBookings.length + ')'));
+      for (const b of newBookings.slice(0, 20)) {
+        list.appendChild(listRow((b.is_test ? 'TEST · ' : '') + b.name, PJ.longDate(b.slot_date) + ' · ' + PJ.windowLabel(b.slot_window),
+          b.city + (b.status === 'confirmed' ? ' · Confirmed' : ''), () => bookingPage(b.id)));
+      }
     }
     if (open.length && !customerQuery) {
       list.appendChild(el('div', 'day', 'Jobs in progress'));
@@ -394,6 +411,8 @@
               if (j.timing === 'now') { j.service_date = today; j.service_window = ''; }
               if (j.timing === 'now' && !PJ.isRequested(j)) {
                 when.appendChild(el('p', 'tip', 'Why can the work be done today?'));
+                const bk = bookings.get(j.id);
+                if (bk) when.appendChild(el('p', 'tip', 'They booked online on ' + PJ.longDate(PJ.ymd(new Date(bk.received_at))) + '. Asked whether a technician stopped by first, they answered “' + (bk.tech_visited_first ? 'Yes' : 'No') + '”. Confirm with them before choosing.'));
                 const styleWhy = choiceGroup(when, PJ.TODAY_REASONS.map(([k, t]) => [k, t, '']),
                   key => j.request.reason === key, key => { j.request.reason = key; styleWhy(); });
                 styleWhy();
@@ -407,7 +426,7 @@
               if (j.timing !== 'scheduled') return;
               const first = firstDate();
               if (!(j.service_date >= first)) j.service_date = first;
-              dateField = input(when, 'Scheduled date', j.service_date, { type: 'date', onInput: v => { j.service_date = v; showLoad(); } });
+              dateField = input(when, 'Scheduled date', j.service_date, { type: 'date', onInput: v => { j.service_date = v; showLoad(); if (timeField && timeField.refreshFor) timeField.refreshFor(v); } });
               dateField.min = first;
               const load = el('p', 'tip', '');
               when.appendChild(load);
@@ -416,9 +435,8 @@
                 load.textContent = !PJ.parseYmd(j.service_date) ? '' : n ? 'The crew already has ' + n + (n === 1 ? ' job' : ' jobs') + ' that day.' : 'No other crew jobs that day yet.';
               };
               showLoad();
-              if (!PJ.isClockTime(j.service_window)) j.service_window = '';   // older jobs used Morning/Afternoon
-              timeField = input(when, 'Appointment time', PJ.to24h(j.service_window), { type: 'time', onInput: v => { j.service_window = PJ.to12h(v); if (timeField) timeField.showError(''); } });
-              timeField.step = 900;
+              if (!PJ.isArrivalWindow(j.service_window)) j.service_window = '';   // older jobs used a time or Morning/Afternoon
+              timeField = windowPicker(when, j, () => { if (timeField) timeField.showError(''); });
               const url = business().booking_url;
               if (url) {
                 const a = el('a', 'plain', 'Check open dates on the website');
@@ -456,7 +474,7 @@
               }
             }
             if (j.timing === 'scheduled' && !(PJ.parseYmd(j.service_date) && j.service_date >= firstDate())) return dateField.showError('Pick a date on or after ' + PJ.longDate(firstDate()) + '.');
-            if (j.timing === 'scheduled' && !PJ.isClockTime(j.service_window)) return timeField.showError('Pick the appointment time.');
+            if (j.timing === 'scheduled' && !PJ.isArrivalWindow(j.service_window)) return timeField.showError('Pick the arrival window.');
             persist().then(() => go(1));
           }));
         },
@@ -810,6 +828,120 @@
     markDoor(job, c, 'BOOKED');
     Sync.soon();
     signedPage(job.id, id);
+  }
+
+  /** Arrival-window choice for a scheduled job. Marks windows that are closed or already taken (when online). */
+  function windowPicker(parent, j, changed) {
+    const wrap = el('label', 'fld');
+    wrap.appendChild(el('span', '', 'Arrival window'));
+    const s = document.createElement('select');
+    const err = el('small', 'err');
+    const fill = avail => {
+      s.innerHTML = '';
+      const o0 = document.createElement('option'); o0.value = ''; o0.textContent = 'Choose…'; s.appendChild(o0);
+      for (const w of PJ.ARRIVAL_WINDOWS) {
+        const o = document.createElement('option');
+        o.value = w;
+        const a = avail && avail[w];
+        o.textContent = PJ.windowLabel(w) + (a === 'taken' ? ' (booked)' : a === 'closed' ? ' (not a work time)' : '');
+        if (a && w !== j.service_window) o.disabled = true;
+        s.appendChild(o);
+      }
+      s.value = j.service_window || '';
+    };
+    fill(null);
+    s.onchange = () => { j.service_window = s.value; changed && changed(); };
+    wrap.append(s, err);
+    parent.appendChild(wrap);
+    s.showError = m => { err.textContent = m || ''; if (m) s.focus(); };
+    s.refreshFor = async date => {
+      const avail = await windowAvailability(date, j.id);
+      fill(avail);
+    };
+    s.refreshFor(j.service_date);
+    return s;
+  }
+  /** {window: 'taken'|'closed'} for a date, from the shared calendar (open_slots) when online. */
+  async function windowAvailability(date, ignoreJobId) {
+    if (!PJ.parseYmd(date) || !navigator.onLine || !Sync.rpc) return null;
+    try {
+      const r = await Sync.rpc('open_slots', { p_client_key: null, p_from: date, p_to: date, p_ignore_job: ignoreJobId || null });
+      const day = r && r.days && r.days[0];
+      if (!day) return null;
+      const out = {};
+      for (const w of PJ.ARRIVAL_WINDOWS) {
+        const sl = (day.slots || []).find(x => x.window === w);
+        if (day.closed || !sl || (sl.reason && sl.reason !== 'taken')) out[w] = sl && sl.available ? undefined : 'closed';
+        else if (!sl.available) out[w] = 'taken';
+        if (!out[w]) delete out[w];
+      }
+      return out;
+    } catch (e) { return null; }
+  }
+
+  // ================================================================ online bookings
+  const BOOKED_SERVICE = { standard: 'Standard Dryer Vent Cleaning', roof_exhaust: 'Roof-Exhaust Dryer Vent Cleaning' };
+  const SERVICE_TEXT = { standard: 'Standard dryer vent cleaning', roof_exhaust: 'Roof-exhaust dryer vent cleaning', complex: 'Complex or long vent run (quote)', multi_unit: 'Multiple properties or units (quote)', not_sure: 'Not sure' };
+  function bookingPage(id) {
+    const b = bookings.get(id);
+    if (!b) return;
+    openPage({
+      title: (b.is_test ? 'TEST · ' : '') + b.name, kicker: 'Online booking', back: () => { closePage(); A.showTab('customers'); }, refresh: () => bookingPage(id),
+      render(body, foot) {
+        const cur = bookings.get(id);
+        const k = card(body, 'Requested time');
+        k.appendChild(el('p', 'big', PJ.longDate(cur.slot_date) + ', ' + PJ.windowLabel(cur.slot_window)));
+        k.appendChild(el('p', '', 'Booked online ' + new Date(cur.received_at).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }) +
+          (cur.preferred_time && cur.preferred_time !== 'any' ? ' · prefers ' + cur.preferred_time : '')));
+        if (cur.is_test) k.appendChild(el('p', 'tip warn', 'This is a TEST booking from the website setup. Decline it when you’re done testing.'));
+        k.appendChild(el('p', 'tip', 'A request, not a confirmed appointment. Call or text the customer to confirm.'));
+        const c = card(body, 'Customer');
+        c.appendChild(el('p', 'big', cur.name));
+        c.appendChild(el('p', '', [cur.street, cur.unit].filter(Boolean).join(' ') + ', ' + cur.city + ' ' + cur.zip));
+        c.appendChild(el('p', '', 'Phone: ' + cur.phone + (cur.email ? ' · Email: ' + cur.email : '') + ' · Prefers ' + ({ call: 'a call', text: 'a text', email: 'email' }[cur.contact_pref] || cur.contact_pref)));
+        c.appendChild(el('p', '', 'Service: ' + (SERVICE_TEXT[cur.service] || cur.service)));
+        c.appendChild(el('p', '', 'Did a technician stop by before they booked? ' + (cur.tech_visited_first ? 'Yes' : 'No') + ' (their answer)'));
+        if (cur.referred_by) c.appendChild(el('p', '', 'Referred by: ' + cur.referred_by + (cur.referrer_phone ? ' · ' + cur.referrer_phone : '')));
+        if (cur.notes) c.appendChild(el('p', 'muted', 'Notes: ' + cur.notes));
+        const r = row(c);
+        { const a = el('a', 'plain', 'Call'); a.href = 'tel:' + cur.phone.replace(/[^\d+]/g, ''); r.appendChild(a); }
+        { const a = el('a', 'plain', 'Text'); a.href = 'sms:' + cur.phone.replace(/[^\d+]/g, ''); r.appendChild(a); }
+        if (cur.status === 'requested') r.appendChild(button('Mark confirmed', '', () => saveRow('booking_requests', bookings, Object.assign({}, cur, { status: 'confirmed' }))));
+        const more = card(body, 'More');
+        more.appendChild(button('Decline (frees the time slot)', 'danger', () => dialog('Decline this booking?', 'The time slot opens up again on the website. Let the customer know.',
+          [{ label: 'Keep it' }, { label: 'Decline', cls: 'danger', run: async () => {
+            await saveRow('booking_requests', bookings, Object.assign({}, bookings.get(id), { status: 'declined' }));
+            closePage(); A.showTab('customers');
+          } }])));
+        foot.appendChild(button(cur.job_id && jobs.has(cur.job_id) ? 'Open the job' : 'Create customer & job', 'primary big', () => convertBooking(id)));
+      },
+    });
+  }
+  /** Turns a booking into a customer and a draft job. Safe to repeat: the job uses the booking’s id. */
+  async function convertBooking(id) {
+    const b = bookings.get(id);
+    if (jobs.has(b.id) && live(jobs.get(b.id))) { continueJob(jobs.get(b.id)); return; }
+    const digits = x => String(x || '').replace(/\D/g, '').slice(-10);
+    let c = [...customers.values()].find(x => live(x) && digits(x.phone) && digits(x.phone) === digits(b.phone));
+    if (!c) {
+      const parts = b.name.trim().split(/\s+/);
+      c = { id: uuid(), first_name: parts[0] || '', last_name: parts.slice(1).join(' '), street: [b.street, b.unit].filter(Boolean).join(' '), city: b.city, state: 'KS', zip: b.zip,
+        phone: b.phone, email: b.email || '', notes: b.notes ? 'Online booking: ' + b.notes : '', lat: null, lon: null, deleted: false };
+      await saveCustomer(c);
+    }
+    const j = newJob(c, null);
+    j.id = b.id;
+    const svc = BOOKED_SERVICE[b.service] && business().services.find(s => s.name === BOOKED_SERVICE[b.service]);
+    if (svc) j.services = [{ name: svc.name, description: svc.description, qty: 1, price_cents: svc.price_cents }];
+    j.service_date = b.slot_date;
+    j.service_window = b.slot_window;
+    j.timing = '';   // the tech chooses in step 1 (today or after the cancel period)
+    j.request = { method: 'Website booking', date: PJ.ymd(new Date(b.received_at)), reason: '' };
+    if (b.referred_by) j.referral = { name: b.referred_by, phone: b.referrer_phone || '', status: 'pending', amount_cents: rewardCents(), source: 'website' };
+    j.total_cents = PJ.totals(j.services, j.adjustments).total;
+    await saveJob(j);
+    await saveRow('booking_requests', bookings, Object.assign({}, b, { status: 'converted', job_id: j.id, customer_id: c.id }));
+    wizard(c, j, 0, false);
   }
 
   // ================================================================ remote signing (customer signs on their own phone)
@@ -1471,49 +1603,142 @@
   }
 
   // ================================================================ referral rewards
+  // Terms R1 (Nov 2026): $25 to whoever referred a NEW customer, once that customer's first qualifying cleaning is
+  // completed, paid, past any cancellation period, and not on hold. Owners mark rewards paid with a reference.
+  const REFERRAL_TERMS = 'R1-2026-11';
+  let myRole = A.lsGet ? (A.lsGet('pc_role') || '') : '';
+  async function loadRole() {
+    try { const r = await Sync.rpc('my_role', {}); if (typeof r === 'string' && r !== myRole) { myRole = r; A.lsSet && A.lsSet('pc_role', r); refresh(); } } catch (e) { /* offline: keep the last known role */ }
+  }
+  function isOwner() { return myRole === 'owner'; }
   function rewardCents() { const v = business().referral_reward_cents; return Number.isFinite(v) && v >= 0 ? v : 2500; }
+  function threshold1099(year) {
+    const t = business().tax_1099_thresholds || {};
+    if (Number.isFinite(t[year])) return { cents: t[year], known: true };
+    const years = Object.keys(t).filter(y => Number.isFinite(t[y])).sort();
+    const last = years.length ? t[years[years.length - 1]] : 200000;
+    return { cents: last, known: String(year) === '2026' && !years.length };
+  }
   function setReferral(j, patch) {
     const r = Object.assign({}, j.referral || {}, patch);
     if (!r.name && !r.phone) { j.referral = {}; return; }
     if (!r.status) r.status = 'pending';
     if (!r.amount_cents && r.status === 'pending') r.amount_cents = rewardCents();
+    if (!r.terms) r.terms = REFERRAL_TERMS;
     j.referral = r;
   }
   function hasReferral(j) { return !!(j && j.referral && j.referral.name); }
-  /** 'owed' once the referred customer's job is paid; 'paid' once we paid the reward. */
-  function referralState(j) {
-    if (!hasReferral(j) || j.referral.status === 'void' || j.status === 'cancelled' || j.status === 'draft' || j.status === 'awaiting') return '';
-    if (j.referral.status === 'paid') return 'paid';
-    if (j.payment_status !== 'paid') return 'waiting';
-    const d = cancelDeadline(j);   // not while the customer can still cancel for a refund
-    return d && PJ.ymd(new Date()) <= d ? 'cancel' : 'owed';
-  }
   function refAmount(j) { return j.referral.amount_cents || rewardCents(); }
+  const digits10 = x => String(x || '').replace(/\D/g, '').slice(-10);
+  /** Warnings for the owner to decide on (never an automatic rejection). */
+  function referralFlags(j) {
+    const r = j.referral, c = customers.get(j.customer_id) || {}, out = [];
+    if ((digits10(r.phone) && digits10(r.phone) === digits10(c.phone)) || (r.name && r.name.trim().toLowerCase() === PJ.fullName(c).trim().toLowerCase()))
+      out.push('The referrer’s name or phone matches the customer (possible self-referral).');
+    const other = [...jobs.values()].find(x => x.id !== j.id && live(x) && x.customer_id === j.customer_id && hasReferral(x) && x.referral.status === 'paid');
+    if (other) out.push('This customer already earned a referral reward on another job.');
+    return out;
+  }
+  /** Why this job's reward is or isn't due: '', 'not_new', 'not_qualifying', 'hold', 'waiting', 'cancel', 'owed', 'paid'. */
+  function referralState(j) {
+    if (!hasReferral(j) || j.referral.status === 'void' || ['cancelled', 'draft', 'awaiting'].includes(j.status)) return '';
+    const r = j.referral;
+    if (r.status === 'paid') return 'paid';
+    const earlier = [...jobs.values()].some(x => x.id !== j.id && live(x) && x.customer_id === j.customer_id && x.payment_status === 'paid'
+      && x.status !== 'cancelled' && (x.service_date || '') <= (j.service_date || '') && (x.service_date !== j.service_date || x.id < j.id));
+    if (earlier) return 'not_new';
+    if ((j.services || []).length && j.services.every(s => /inspection only/i.test(s.name))) return 'not_qualifying';
+    if (r.hold) return 'hold';
+    if (j.status !== 'completed' || j.payment_status !== 'paid') return 'waiting';
+    const d = cancelDeadline(j);
+    if (d && PJ.ymd(new Date()) <= d) return 'cancel';
+    return 'owed';
+  }
+  function addDays(ymd, n) { const d = PJ.parseYmd(ymd); return PJ.ymd(new Date(d.getFullYear(), d.getMonth(), d.getDate() + n)); }
+  function historyEntry(action, note) { return { at: new Date().toISOString(), by: technician() || A.lsGet && A.lsGet('pc_email') || '', action, note: note || '' }; }
+  /** Records the first day a reward became due (and its pay-by date). Never moves once set. */
+  let stamping = false;
+  async function stampEligibility() {
+    if (stamping) return;
+    stamping = true;
+    try {
+      for (const j of [...jobs.values()]) {
+        if (!live(j) || !hasReferral(j) || j.referral.eligible_at || referralState(j) !== 'owed') continue;
+        const today = PJ.ymd(new Date());
+        const r = Object.assign({}, j.referral, { eligible_at: today, pay_by: addDays(today, 7) });
+        r.history = (r.history || []).concat([historyEntry('eligible', 'Completed, paid and past the cancel period')]);
+        await saveJob(Object.assign({}, j, { referral: r }));
+      }
+    } finally { stamping = false; }
+  }
+  const STATE_TEXT = {
+    not_new: 'Not eligible: this customer had an earlier paid job (rewards are for new customers).',
+    not_qualifying: 'Not eligible: inspection-only jobs don’t qualify.',
+    hold: 'On hold',
+  };
   function referralCard(body, j) {
     if (!hasReferral(j)) return;
     const r = j.referral, st = referralState(j), amt = PJ.money(refAmount(j));
+    if (st === 'owed' && !r.eligible_at) setTimeout(stampEligibility, 0);   // first time we see it due: record the date
     const k = card(body, 'Referral reward');
     k.appendChild(el('p', 'big', r.name + (r.phone ? ' · ' + r.phone : '')));
-    if (st === 'paid') k.appendChild(el('p', '', 'Paid ' + amt + ' on ' + PJ.longDate(r.paid_at) + (r.paid_method ? ' by ' + r.paid_method : '') + '.'));
-    else if (st === 'owed') k.appendChild(el('p', 'tip warn', 'You owe ' + r.name + ' ' + amt + '. This customer has paid.'));
-    else if (st === 'waiting') k.appendChild(el('p', 'tip', amt + ' will be owed to ' + r.name + ' once this job is paid.'));
-    else if (st === 'cancel') k.appendChild(el('p', 'tip', 'The customer has paid. ' + amt + ' will be owed to ' + r.name + ' after their cancel period ends at midnight of ' + PJ.longDate(cancelDeadline(j)) + '.'));
-    else k.appendChild(el('p', 'tip', r.status === 'void' ? 'No reward for this job.' : 'The reward counts once the job is signed and paid.'));
+    const setR = (patch, action, note) => {
+      const cur = jobs.get(j.id).referral;
+      const nr = Object.assign({}, cur, patch);
+      nr.history = (cur.history || []).concat([historyEntry(action, note)]);
+      return saveJob(Object.assign({}, jobs.get(j.id), { referral: nr }));
+    };
+    if (st === 'paid') k.appendChild(el('p', '', 'Paid ' + amt + ' on ' + PJ.longDate(r.paid_at) + (r.paid_method ? ' by ' + r.paid_method : '') + (r.paid_ref ? ' · ref ' + r.paid_ref : '') + '.'));
+    else if (st === 'owed') k.appendChild(el('p', 'tip warn', 'You owe ' + r.name + ' ' + amt + '.' + (r.pay_by ? ' Pay by ' + PJ.longDate(r.pay_by) + (PJ.ymd(new Date()) > r.pay_by ? ' (overdue).' : '.') : '')));
+    else if (st === 'waiting') k.appendChild(el('p', 'tip', amt + ' will be owed to ' + r.name + ' once this job is completed and paid.'));
+    else if (st === 'cancel') k.appendChild(el('p', 'tip', amt + ' will be owed to ' + r.name + ' after the customer’s cancel period ends at midnight of ' + PJ.longDate(cancelDeadline(j)) + '.'));
+    else if (st === 'hold') k.appendChild(el('p', 'tip warn', 'On hold: ' + r.hold));
+    else if (STATE_TEXT[st]) k.appendChild(el('p', 'tip', STATE_TEXT[st]));
+    else k.appendChild(el('p', 'tip', r.status === 'void' ? 'No reward for this job' + (r.void_reason ? ': ' + r.void_reason : '.') : 'The reward counts once the job is signed, completed and paid.'));
+    referralFlags(j).forEach(f => k.appendChild(el('p', 'tip warn', f)));
+    const reason = input(k, 'Reason or reference', '', { max: 200 });
+    reason.placeholder = 'e.g. check #1042, Venmo ID, cash receipt #, or why';
+    const needReason = () => { const v = reason.value.trim(); if (!v) { reason.showError('Enter a reason or reference first.'); return ''; } return v; };
     const rr = row(k);
-    const setR = patch => saveJob(Object.assign({}, jobs.get(j.id), { referral: Object.assign({}, jobs.get(j.id).referral, patch) }));
     if (st === 'owed') {
-      const methods = ['Cash', 'Check', 'Venmo', 'Cash App', 'Zelle', 'PayPal', 'Gift card', 'Other'];
-      let method = 'Cash';
-      select(k, 'Paid by', methods, method, v => { method = v; });
-      rr.remove();
-      const r2 = row(k);
-      r2.appendChild(button('Mark ' + amt + ' paid', 'primary', async () => { await setR({ status: 'paid', paid_at: PJ.ymd(new Date()), paid_method: method }); toast('Reward marked paid.'); }));
-      r2.appendChild(button('No reward for this one', '', () => setR({ status: 'void' })));
-      return;
+      if (isOwner()) {
+        let method = 'Venmo';
+        select(k, 'Paid by', ['Venmo', 'Zelle', 'Cash App', 'PayPal', 'Check', 'Cash', 'Gift card', 'Other'], method, v => { method = v; });
+        const r2 = row(k);
+        r2.appendChild(button('Mark ' + amt + ' paid', 'primary', async () => {
+          const ref = needReason(); if (!ref) return;
+          if (referralState(jobs.get(j.id)) !== 'owed') { toast('This reward isn’t due anymore. Reopen the job.', true); return; }
+          const cur = jobs.get(j.id).referral, today = PJ.ymd(new Date());
+          await setR(Object.assign(cur.eligible_at ? {} : { eligible_at: today, pay_by: addDays(today, 7) },
+            { status: 'paid', paid_at: today, paid_method: method, paid_ref: ref }), 'paid', method + ' · ' + ref);
+          toast('Reward marked paid.');
+        }));
+      } else k.appendChild(el('p', 'muted', 'Only an owner can mark rewards paid.'));
     }
-    if (st === 'paid') rr.appendChild(button('Undo paid', '', () => setR({ status: 'pending', paid_at: '', paid_method: '' })));
-    if (st === 'waiting' || st === 'cancel') rr.appendChild(button('No reward for this one', '', () => setR({ status: 'void' })));
-    if (r.status === 'void') rr.appendChild(button('Give the reward after all', '', () => setR({ status: 'pending', amount_cents: refAmount(j) })));
+    if (st === 'paid' && isOwner()) rr.appendChild(button('Undo paid (needs a reason)', '', async () => {
+      const why = needReason(); if (!why) return;
+      await setR({ status: 'pending', paid_at: '', paid_method: '', paid_ref: '' }, 'payment_reversed', 'Was ' + (r.paid_method || '') + ' ' + (r.paid_ref || '') + ' on ' + (r.paid_at || '') + '. Why: ' + why);
+    }));
+    if (['owed', 'waiting', 'cancel'].includes(st)) rr.appendChild(button('Put on hold', '', async () => { const why = needReason(); if (why) await setR({ hold: why }, 'hold', why); }));
+    if (st === 'hold') rr.appendChild(button('Release hold', '', () => setR({ hold: '' }, 'hold_released', reason.value.trim())));
+    if (st !== 'paid' && r.status !== 'void') rr.appendChild(button('Not eligible', '', async () => { const why = needReason(); if (why) await setR({ status: 'void', void_reason: why }, 'ineligible', why); }));
+    if (r.status === 'void') rr.appendChild(button('Make eligible again', '', async () => { const why = needReason(); if (why) await setR({ status: 'pending', void_reason: '', amount_cents: refAmount(j) }, 'eligible_again', why); }));
+    if ((r.history || []).length) {
+      const h = el('details', '');
+      h.appendChild(el('summary', '', 'History (' + r.history.length + ')'));
+      r.history.slice().reverse().forEach(e => h.appendChild(el('p', 'muted', new Date(e.at).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }) + ' · ' + e.action.replace(/_/g, ' ') + (e.by ? ' · ' + e.by : '') + (e.note ? ' · ' + e.note : ''))));
+      k.appendChild(h);
+    }
+    k.appendChild(el('p', 'muted', 'Terms ' + (r.terms || REFERRAL_TERMS) + (r.source ? ' · from the ' + r.source : '')));
+  }
+  function referralsCsv(year) {
+    const rows = [['Referrer', 'Referrer phone', 'Customer', 'Job date', 'Amount', 'Paid on', 'Method', 'Reference', 'Terms']];
+    for (const j of jobs.values()) {
+      if (!live(j) || !hasReferral(j) || j.referral.status !== 'paid' || !(j.referral.paid_at || '').startsWith(year)) continue;
+      const r = j.referral;
+      rows.push([r.name, r.phone || '', PJ.fullName(customers.get(j.customer_id)), j.service_date, (refAmount(j) / 100).toFixed(2), r.paid_at, r.paid_method || '', r.paid_ref || '', r.terms || '']);
+    }
+    return rows.map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\r\n') + '\r\n';
   }
   /** Rewards owed and paid, with yearly totals per person (for taxes). */
   function referralsPage() {
@@ -1521,22 +1746,28 @@
       title: 'Referral rewards', kicker: 'Customers', back: () => { closePage(); A.showTab('customers'); }, refresh: () => referralsPage(),
       render(body) {
         const list = [...jobs.values()].filter(j => live(j) && hasReferral(j) && live(customers.get(j.customer_id)));
-        const owed = list.filter(j => referralState(j) === 'owed'), waiting = list.filter(j => referralState(j) === 'waiting' || referralState(j) === 'cancel');
+        const owed = list.filter(j => referralState(j) === 'owed').sort((a, b) => (a.referral.pay_by || '9').localeCompare(b.referral.pay_by || '9'));
+        const later = list.filter(j => ['waiting', 'cancel', 'hold'].includes(referralState(j)));
         const paid = list.filter(j => referralState(j) === 'paid').sort((a, b) => (b.referral.paid_at || '').localeCompare(a.referral.paid_at || ''));
-        const sum = js => js.reduce((t, j) => t + refAmount(j), 0);
-        const k = card(body, 'Owed now (' + owed.length + ') · ' + PJ.money(sum(owed)));
+        const today = PJ.ymd(new Date());
+        const k = card(body, 'Owed now (' + owed.length + ') · ' + PJ.money(owed.reduce((t, j) => t + refAmount(j), 0)));
         if (!owed.length) k.appendChild(el('p', 'muted', 'Nothing owed right now.'));
-        owed.forEach(j => k.appendChild(listRow(j.referral.name + ' · ' + PJ.money(refAmount(j)),
-          'Referred ' + PJ.fullName(customers.get(j.customer_id)) + (j.referral.phone ? ' · ' + j.referral.phone : ''), 'Tap to pay', () => openJob(j.id))));
-        if (waiting.length) {
-          const w = card(body, 'Not due yet (' + waiting.length + ')');
-          waiting.forEach(j => w.appendChild(listRow(j.referral.name, 'Referred ' + PJ.fullName(customers.get(j.customer_id)),
-            referralState(j) === 'cancel' ? 'Due after ' + PJ.longDate(cancelDeadline(j)) : 'Customer hasn’t paid', () => openJob(j.id))));
+        owed.forEach(j => k.appendChild(listRow((j.referral.pay_by && today > j.referral.pay_by ? 'OVERDUE · ' : '') + j.referral.name + ' · ' + PJ.money(refAmount(j)),
+          'Referred ' + PJ.fullName(customers.get(j.customer_id)) + (j.referral.phone ? ' · ' + j.referral.phone : ''),
+          j.referral.pay_by ? 'Pay by ' + PJ.longDate(j.referral.pay_by) : 'Tap to pay', () => openJob(j.id))));
+        if (later.length) {
+          const w = card(body, 'Not due yet (' + later.length + ')');
+          later.forEach(j => {
+            const st = referralState(j);
+            w.appendChild(listRow(j.referral.name, 'Referred ' + PJ.fullName(customers.get(j.customer_id)),
+              st === 'cancel' ? 'Due after ' + PJ.longDate(cancelDeadline(j)) : st === 'hold' ? 'On hold: ' + j.referral.hold : 'Job not completed and paid yet', () => openJob(j.id)));
+          });
         }
         const year = String(new Date().getFullYear());
+        const lim = threshold1099(year);
         const byPerson = new Map();
         paid.filter(j => (j.referral.paid_at || '').startsWith(year)).forEach(j => {
-          const key = (j.referral.name.trim() + '|' + (j.referral.phone || '').replace(/\D/g, '')).toLowerCase();
+          const key = (j.referral.name.trim() + '|' + digits10(j.referral.phone)).toLowerCase();
           const e = byPerson.get(key) || { name: j.referral.name, phone: j.referral.phone, cents: 0, n: 0 };
           e.cents += refAmount(j); e.n++;
           byPerson.set(key, e);
@@ -1545,13 +1776,21 @@
         if (!byPerson.size) t.appendChild(el('p', 'muted', 'No rewards paid yet this year.'));
         [...byPerson.values()].sort((a, b) => b.cents - a.cents).forEach(e => {
           t.appendChild(el('p', '', e.name + (e.phone ? ' (' + e.phone + ')' : '') + ': ' + PJ.money(e.cents) + ' for ' + e.n + ' referral' + (e.n === 1 ? '' : 's') +
-            (e.cents >= 200000 ? ' — at the 1099-NEC limit; ask your tax preparer.' : e.cents >= 150000 ? ' — getting close to the 1099 limit; get their W-9.' : '')));
+            (e.cents >= lim.cents ? ' — at the 1099-NEC limit; ask your tax preparer.' : e.cents >= lim.cents * 0.75 ? ' — getting close to the 1099 limit; get their W-9.' : '')));
         });
-        t.appendChild(el('p', 'tip', 'Use this list for your taxes (referral fees). Anyone you pay $2,000 or more in a year may need a 1099-NEC; ask your tax preparer.'));
+        t.appendChild(el('p', 'tip', 'Use this list for your taxes (referral fees). 1099-NEC limit used for ' + year + ': ' + PJ.money(lim.cents) +
+          (lim.known ? '' : ' (check this year’s limit and update it in Business settings)') + '. Ask your tax preparer.'));
+        row(t).appendChild(button('Export ' + year + ' (spreadsheet)', '', () => {
+          const blob = new Blob([referralsCsv(year)], { type: 'text/csv' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob); a.download = 'referral-rewards-' + year + '.csv';
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+        }));
         if (paid.length) {
           const h = card(body, 'Payment history');
           paid.slice(0, 200).forEach(j => h.appendChild(listRow(j.referral.name + ' · ' + PJ.money(refAmount(j)),
-            'Referred ' + PJ.fullName(customers.get(j.customer_id)), PJ.longDate(j.referral.paid_at) + (j.referral.paid_method ? ' · ' + j.referral.paid_method : ''), () => openJob(j.id))));
+            'Referred ' + PJ.fullName(customers.get(j.customer_id)), PJ.longDate(j.referral.paid_at) + (j.referral.paid_method ? ' · ' + j.referral.paid_method : '') + (j.referral.paid_ref ? ' · ' + j.referral.paid_ref : ''), () => openJob(j.id))));
         }
       },
     });
@@ -1703,6 +1942,46 @@
   }
 
   // ================================================================ settings
+  /** Owners: who can sign in, and what they can do. */
+  function crewCard(body) {
+    const k = card(body, 'Crew access');
+    k.appendChild(el('p', 'tip', 'Owners can change business settings, prices and the schedule, manage the crew, and mark referral rewards paid. Technicians can do everything else.'));
+    const list = el('div', '');
+    k.appendChild(list);
+    const ERR = { owners_only: 'Only an owner can do that.', last_owner: 'Keep at least one owner.', email: 'Enter a valid email.', role: 'Pick a role.' };
+    const load = async () => {
+      list.innerHTML = '';
+      list.appendChild(el('p', 'muted', 'Loading…'));
+      let r;
+      try { r = await Sync.rpc('crew_list', {}); } catch (e) { list.innerHTML = ''; list.appendChild(el('p', 'muted', 'Connect to the internet to manage the crew.')); return; }
+      list.innerHTML = '';
+      (r.crew || []).forEach(m => {
+        const line = row(list);
+        line.appendChild(el('span', '', m.email + (m.name ? ' (' + m.name + ')' : '') + ' · ' + (m.role === 'owner' ? 'Owner' : 'Technician')));
+        line.appendChild(button(m.role === 'owner' ? 'Make technician' : 'Make owner', '', async () => {
+          const x = await Sync.rpc('crew_save', { p_email: m.email, p_name: m.name || '', p_role: m.role === 'owner' ? 'tech' : 'owner' });
+          if (!x.ok) toast(ERR[x.error] || x.error, true); else load();
+        }));
+        line.appendChild(button('Remove', 'danger', () => dialog('Remove ' + m.email + '?', 'They won’t be able to sign in to the crew app anymore.', [{ label: 'Keep' }, { label: 'Remove', cls: 'danger', run: async () => {
+          const x = await Sync.rpc('crew_remove', { p_email: m.email });
+          if (!x.ok) toast(ERR[x.error] || x.error, true); else load();
+        } }])));
+      });
+    };
+    const email = input(k, 'Add someone: their email', '', { type: 'email', caps: 'off', max: 200 });
+    const name = input(k, 'Their name (optional)', '', { caps: 'words', max: 100 });
+    let role = 'Technician';
+    select(k, 'Role', ['Technician', 'Owner'], role, v => { role = v; });
+    row(k).appendChild(button('Add to crew', '', async () => {
+      try {
+        const x = await Sync.rpc('crew_save', { p_email: email.value.trim(), p_name: name.value.trim(), p_role: role === 'Owner' ? 'owner' : 'tech' });
+        if (!x.ok) { toast(ERR[x.error] || x.error, true); return; }
+        email.value = ''; name.value = ''; toast('Added. They sign in with that email.'); load();
+      } catch (e) { toast('Couldn’t add: ' + e.message, true); }
+    }));
+    load();
+  }
+
   function openSettings() {
     const b = business();
     const v = JSON.parse(JSON.stringify(b));
@@ -1711,6 +1990,13 @@
       render(body, foot) {
         const t = card(body, 'This device');
         const tech = input(t, 'Technician name (on agreements and reports)', technician(), { caps: 'words', max: 120 });
+        t.appendChild(el('p', 'muted', 'Your access: ' + (myRole === 'owner' ? 'Owner' : myRole === 'tech' ? 'Technician' : 'checking…')));
+        if (!isOwner()) {
+          body.appendChild(el('p', 'tip', 'Only an owner can change business details, prices, the referral reward and the schedule.'));
+          foot.appendChild(button('Save', 'primary big', () => { A.lsSet('pc-tech', tech.value.trim()); toast('Saved.'); closePage(); }));
+          return;
+        }
+        crewCard(body);
         const k = card(body, 'Business details (shared with the crew)');
         k.appendChild(el('p', 'tip', 'These appear on every new agreement and report. Agreements already signed don’t change.'));
         input(k, 'Business name', v.name, { onInput: x => { v.name = x; } });
@@ -1729,6 +2015,9 @@
         rvl.append(rvc, el('span', '', 'Allow customer-requested visits (attorney approved)'));
         rv.appendChild(rvl);
         input(k, 'Google review link (added to report messages)', v.review_url, { type: 'url', caps: 'off', onInput: x => { v.review_url = x.trim(); } });
+        const ty = String(new Date().getFullYear());
+        v.tax_1099_thresholds = Object.assign({ 2026: 200000 }, v.tax_1099_thresholds || {});
+        input(k, '1099-NEC limit for ' + ty + ' in dollars (check each year)', String((Number.isFinite(v.tax_1099_thresholds[ty]) ? v.tax_1099_thresholds[ty] : 200000) / 100), { type: 'number', onInput: x => { const n = Math.round(parseFloat(x) * 100); if (Number.isFinite(n) && n > 0) v.tax_1099_thresholds[ty] = n; } });
         input(k, 'Referral reward in dollars (0 turns it off)', String((Number.isFinite(v.referral_reward_cents) ? v.referral_reward_cents : 2500) / 100), { type: 'number', onInput: x => { const n = Math.round(parseFloat(x) * 100); v.referral_reward_cents = Number.isFinite(n) && n >= 0 ? n : 2500; } });
         input(k, 'Online booking page (shown when scheduling)', v.booking_url, { type: 'url', caps: 'off', onInput: x => { v.booking_url = x.trim(); } });
         input(k, 'Payment terms', v.payment_terms, { multi: true, rows: 2, onInput: x => { v.payment_terms = x; } });
@@ -1757,5 +2046,5 @@
 
   // ================================================================ public
   window.Jobs = { showCustomers, startFromDoor, jobForDoor: id => jobForDoor(id), openCustomer, openJob,
-    _debug: { customers, jobs, agreements, settings, reportPdf, agreementPdf } };
+    closePage, openSettings, _debug: { customers, jobs, agreements, settings, bookings, reportPdf, agreementPdf, convertBooking, role: () => myRole, loadRole } };
 })();
