@@ -881,8 +881,9 @@
         }));
         // To text from the business number (Google Voice), share or copy the whole message and pick Google Voice.
         const gv = card(body, 'Text from your business number');
-        gv.appendChild(el('p', 'tip', 'To send from Google Voice: tap “Share message” and pick Voice, or tap “Copy message”, open Google Voice, start a text to ' + (c.phone || 'the customer') + ', and paste.'));
+        gv.appendChild(el('p', 'tip', 'To send from Google Voice: save the customer to your contacts (once), tap “Copy message”, then in Google Voice start a text, type their name, and paste.'));
         const r2 = row(gv);
+        if (c.phone) r2.appendChild(button('Save to contacts', '', () => saveContact(c)));
         if (navigator.share) r2.appendChild(button('Share message', '', async () => {
           try { await navigator.share({ text: msg }); } catch (e) { /* closed */ }
         }));
@@ -903,6 +904,26 @@
       },
     });
   }
+  /** A contact card (.vcf) the phone opens as “Add contact”, so Google Voice can find the customer by name. */
+  function saveContact(c) {
+    const esc = v => String(v || '').replace(/\\/g, '\\\\').replace(/,/g, '\\,').replace(/;/g, '\\;').replace(/\n/g, '\\n');
+    const lines = ['BEGIN:VCARD', 'VERSION:3.0', 'N:' + esc(c.last_name) + ';' + esc(c.first_name) + ';;;', 'FN:' + esc(PJ.fullName(c))];
+    if (c.phone) lines.push('TEL;TYPE=CELL:' + c.phone.replace(/[^\d+]/g, ''));
+    if (c.email) lines.push('EMAIL:' + esc(c.email));
+    lines.push('ADR;TYPE=HOME:;;' + esc(c.street) + ';' + esc(c.city) + ';' + esc(c.state) + ';' + esc(c.zip) + ';');
+    lines.push('NOTE:' + esc(business().name + ' customer'), 'END:VCARD');
+    const file = new File([lines.join('\r\n') + '\r\n'], (PJ.fullName(c) || 'customer').replace(/[^\w ]/g, '') + '.vcf', { type: 'text/vcard' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      navigator.share({ files: [file] }).catch(() => {});
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(file); a.download = file.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    toast('Open the downloaded contact card and tap “Add contact”.');
+  }
+
   /** Turns a request the customer signed on their phone into a signed agreement (PDF + job), once, on any crew phone. */
   let processing = false;
   async function processSignedRequests() {
@@ -1466,6 +1487,7 @@
         if (c.email) { const a = el('a', 'plain', 'Email'); a.href = 'mailto:' + c.email; r.appendChild(a); }
         r.appendChild(button('Edit', '', () => editCustomer(c.id)));
         if (c.lat != null) r.appendChild(button('Map', '', () => { closePage(); A.goTo(c.lat, c.lon); }));
+        if (c.phone || c.email) k.appendChild(button('Save to phone contacts', '', () => saveContact(c)));
         const js = jobsFor(c.id);
         const jl = card(body, 'Jobs (' + js.length + ')');
         if (!js.length) jl.appendChild(el('p', 'muted', 'No jobs yet.'));
