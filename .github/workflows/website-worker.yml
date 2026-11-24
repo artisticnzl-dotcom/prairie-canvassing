@@ -1,0 +1,119 @@
+# Publishes the website Worker (prairie-lint-patrol) to Cloudflare, safely:
+# saves the current version, uploads the new code while KEEPING the site's files, secrets and settings,
+# checks the live site, and rolls back automatically if any check fails.
+name: Website Worker
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'deploy | check | test-booking | rollback'
+        required: true
+        default: check
+      version_id:
+        description: 'Version to roll back to (rollback only)'
+        required: false
+permissions:
+  contents: read
+concurrency: website-worker
+env:
+  ACCOUNT: 672b9dfa4e1cae648b3248b7f0f34a12
+  SCRIPT: prairie-lint-patrol
+  SITE: https://prairielintpatrol.com
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Token present
+        env: { CF_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
+        run: test -n "$CF_TOKEN" || { echo "Add the CLOUDFLARE_API_TOKEN secret first."; exit 1; }
+      - name: Current state
+        id: state
+        env: { CF_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
+        run: |
+          api() { curl -sS -H "Authorization: Bearer $CF_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/scripts/$SCRIPT$1"; }
+          api /deployments > deployments.json
+          jq -e '.success' deployments.json > /dev/null || { jq '.errors' deployments.json; exit 1; }
+          PREV=$(jq -r '.result.deployments[0].versions[0].version_id' deployments.json)
+          echo "prev=$PREV" >> "$GITHUB_OUTPUT"
+          echo "Live version now: $PREV"
+          api /settings > settings.json
+          jq -e '.success' settings.json > /dev/null || { jq '.errors' settings.json; exit 1; }
+          echo "Compatibility: $(jq -c '.result | {compatibility_date, compatibility_flags}' settings.json)"
+          echo "Bindings (names and types only): $(jq -c '[.result.bindings[] | {name, type}]' settings.json)"
+      - name: Deploy new version
+        if: inputs.action == 'deploy'
+        id: deploy
+        env: { CF_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
+        run: |
+          node --check website-worker/worker.js
+          jq -n --slurpfile s settings.json '{
+            main_module: "worker.js",
+            compatibility_date: $s[0].result.compatibility_date,
+            compatibility_flags: ($s[0].result.compatibility_flags // []),
+            keep_assets: true,
+            keep_bindings: ([$s[0].result.bindings[].type] | unique),
+            bindings: [],
+            annotations: { "workers/message": "Add /booking-test (Booking API v1.1 TEST)" }
+          }' > metadata.json
+          echo "Upload settings: $(jq -c . metadata.json)"
+          curl -sS -X POST "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/scripts/$SCRIPT/versions" \
+            -H "Authorization: Bearer $CF_TOKEN" \
+            -F "metadata=@metadata.json;type=application/json" \
+            -F "worker.js=@website-worker/worker.js;filename=worker.js;type=application/javascript+module" > upload.json
+          jq -e '.success' upload.json > /dev/null || { jq '.errors, .messages' upload.json; exit 1; }
+          NEW=$(jq -r '.result.id' upload.json)
+          echo "Uploaded version $NEW (not live yet)"
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+          curl -sS -X POST "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/scripts/$SCRIPT/deployments" \
+            -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
+            -d "{\"strategy\":\"percentage\",\"versions\":[{\"percentage\":100,\"version_id\":\"$NEW\"}],\"annotations\":{\"workers/message\":\"Booking API v1.1 TEST page\"}}" > deploy.json
+          jq -e '.success' deploy.json > /dev/null || { jq '.errors' deploy.json; exit 1; }
+          echo "Version $NEW is live. Checking the site..."
+          sleep 20
+      - name: Check the live site
+        id: check
+        if: inputs.action != 'rollback'
+        run: |
+          set -u
+          fail=0
+          get() { curl -sS -L --max-time 20 -o body.txt -w '%{http_code}' -H 'Cache-Control: no-cache' "$SITE$1"; }
+          code=$(get /); grep -q 'Prairie Lint Patrol' body.txt && grep -q 'plp-hero-prices' body.txt && grep -q 'closure-notice' body.txt && [ "$code" = 200 ] && echo "OK homepage" || { echo "FAIL homepage ($code)"; fail=1; }
+          code=$(get /assets/appointments.js); [ "$code" = 200 ] && echo "OK site files" || { echo "FAIL site files ($code)"; fail=1; }
+          code=$(get /api/availability); grep -q '"ok":true' body.txt && echo "OK live booking calendar" || { echo "FAIL live booking calendar ($code): $(head -c 200 body.txt)"; fail=1; }
+          if [ "${{ inputs.action }}" = deploy ] || grep -q . /dev/null; then :; fi
+          code=$(get /booking-test); if grep -q 'TEST BOOKING FORM' body.txt; then echo "OK test page"; else echo "test page not present ($code)"; [ "${{ inputs.action }}" = deploy ] && fail=1; fi
+          code=$(get '/api/test/availability?visited=no'); if grep -q '"ok":true' body.txt; then echo "OK test calendar: $(jq -c '{first, days: (.days|length)}' body.txt)"; else echo "test calendar: $code $(head -c 200 body.txt)"; [ "${{ inputs.action }}" = deploy ] && fail=1; fi
+          echo "failed=$fail" >> "$GITHUB_OUTPUT"
+          exit $fail
+      - name: Roll back automatically if a check failed
+        if: failure() && inputs.action == 'deploy' && steps.state.outputs.prev != ''
+        env: { CF_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
+        run: |
+          curl -sS -X POST "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/scripts/$SCRIPT/deployments" \
+            -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
+            -d "{\"strategy\":\"percentage\",\"versions\":[{\"percentage\":100,\"version_id\":\"${{ steps.state.outputs.prev }}\"}],\"annotations\":{\"workers/message\":\"Automatic rollback\"}}" | jq -c '{success, errors}'
+          echo "Rolled back to ${{ steps.state.outputs.prev }}"
+      - name: Manual rollback
+        if: inputs.action == 'rollback'
+        env: { CF_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
+        run: |
+          test -n "${{ inputs.version_id }}"
+          curl -sS -X POST "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/scripts/$SCRIPT/deployments" \
+            -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
+            -d "{\"strategy\":\"percentage\",\"versions\":[{\"percentage\":100,\"version_id\":\"${{ inputs.version_id }}\"}],\"annotations\":{\"workers/message\":\"Manual rollback\"}}" | jq -c '{success, errors}'
+      - name: TEST booking through the website (no emails)
+        if: inputs.action == 'test-booking'
+        run: |
+          slot=$(curl -sS "$SITE/api/test/availability?visited=no" | jq -r '[.days | to_entries[] | select(.value | length > 0)][0].value[0].slotId')
+          echo "Using slot $slot"
+          rid="web_test_gh_$(date +%s)"
+          post() { curl -sS -X POST "$SITE/api/test/booking" -H "Origin: $SITE" -H 'Accept: application/json' -H 'Content-Type: application/x-www-form-urlencoded' \
+            --data-urlencode "requestId=$rid" --data-urlencode "slotId=$slot" --data-urlencode 'fullName=TEST Automation' --data-urlencode 'phone=620-555-0142' \
+            --data-urlencode 'email=' --data-urlencode 'contactMethod=text' --data-urlencode 'streetAddress=1 Test Lane' --data-urlencode 'city=Hesston' --data-urlencode 'zip=67062' \
+            --data-urlencode 'type=Standard dryer vent cleaning ($149)' --data-urlencode 'technicianVisit=no' --data-urlencode 'referredBy=TEST Referrer' \
+            --data-urlencode 'referrerPhone=620-555-0101' --data-urlencode 'notes=Automated TEST booking from GitHub'; }
+          echo "First:  $(post)"
+          echo "Replay: $(post)"
+          echo "Second customer, same window:"
+          rid="web_test_gh2_$(date +%s)"; post
