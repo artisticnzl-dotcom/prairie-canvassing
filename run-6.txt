@@ -1,0 +1,11 @@
+Run 6 action=go-live result=success 2026-11-24T23:55:55Z
+OK homepage
+OK site files
+OK live booking calendar
+OK test page
+OK test page script
+OK test calendar: {"first":"2026-11-25","days":90}
+OK live form uses the shared calendar
+OK live form script
+OK live calendar from shared calendar: {"first":"2026-11-25","days":20}
+OK live booking handler (validation only, nothing saved)
