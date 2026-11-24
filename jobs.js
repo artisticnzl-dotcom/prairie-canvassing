@@ -879,6 +879,16 @@
         r.appendChild(button('Copy link', '', async () => {
           try { await navigator.clipboard.writeText(signLink(sr)); toast('Link copied.'); } catch (e) { dialog('Signing link', signLink(sr)); }
         }));
+        // To text from the business number (Google Voice), share or copy the whole message and pick Google Voice.
+        const gv = card(body, 'Text from your business number');
+        gv.appendChild(el('p', 'tip', 'To send from Google Voice: tap “Share message” and pick Voice, or tap “Copy message”, open Google Voice, start a text to ' + (c.phone || 'the customer') + ', and paste.'));
+        const r2 = row(gv);
+        if (navigator.share) r2.appendChild(button('Share message', '', async () => {
+          try { await navigator.share({ text: msg }); } catch (e) { /* closed */ }
+        }));
+        r2.appendChild(button('Copy message', '', async () => {
+          try { await navigator.clipboard.writeText(msg); toast('Message copied. Paste it in Google Voice.'); } catch (e) { dialog('Message', msg); }
+        }));
         body.appendChild(el('p', 'tip', 'When they sign, this job turns to “Scheduled” on every crew phone, and the signed agreement PDF is saved with the job. Their cancel period counts from the day they sign.'));
         const more = card(body, 'More');
         more.appendChild(button('Cancel the link and sign here instead', '', () => dialog('Cancel the signing link?',
