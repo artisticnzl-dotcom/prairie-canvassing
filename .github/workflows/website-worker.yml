@@ -51,11 +51,15 @@ jobs:
         env: { CF_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
         run: |
           node --check website-worker/worker.js
-          jq -n --slurpfile s settings.json '{
+          RWF=$(jq -c '.result.resources.script_runtime.assets.raw_run_worker_first // empty' version.json)
+          test -n "$RWF" || { echo "Could not read the live file-routing rule; stopping without changes."; exit 1; }
+          echo "Keeping file-routing rule: $RWF"
+          jq -n --slurpfile s settings.json --argjson rwf "$RWF" '{
             main_module: "worker.js",
             compatibility_date: $s[0].result.compatibility_date,
             compatibility_flags: ($s[0].result.compatibility_flags // []),
             keep_assets: true,
+            assets: { config: { run_worker_first: $rwf } },
             keep_bindings: ([$s[0].result.bindings[].type] | unique),
             bindings: [],
             annotations: { "workers/message": "Add /booking-test (Booking API v1.1 TEST)" }
@@ -73,6 +77,9 @@ jobs:
             -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
             -d "{\"strategy\":\"percentage\",\"versions\":[{\"percentage\":100,\"version_id\":\"$NEW\"}],\"annotations\":{\"workers/message\":\"Booking API v1.1 TEST page\"}}" > deploy.json
           jq -e '.success' deploy.json > /dev/null || { jq '.errors' deploy.json; exit 1; }
+          curl -sS -H "Authorization: Bearer $CF_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/scripts/$SCRIPT/versions/$NEW" > newversion.json
+          echo "New version file routing: $(jq -c '.result.resources.script_runtime.assets' newversion.json)"
+          echo "New version bindings: $(jq -c '[.result.resources.bindings[]? | {name, type}]' newversion.json)"
           echo "Version $NEW is live. Checking the site..."
           sleep 20
       - name: Check the live site
@@ -87,6 +94,7 @@ jobs:
           code=$(get /api/availability); grep -q '"ok":true' body.txt && echo "OK live booking calendar" || { echo "FAIL live booking calendar ($code): $(head -c 200 body.txt)"; fail=1; }
           if [ "${{ inputs.action }}" = deploy ] || grep -q . /dev/null; then :; fi
           code=$(get /booking-test); if grep -q 'TEST BOOKING FORM' body.txt; then echo "OK test page"; else echo "test page not present ($code)"; [ "${{ inputs.action }}" = deploy ] && fail=1; fi
+          code=$(get /booking-test-app.js); if grep -q 'visited=' body.txt; then echo "OK test page script"; else echo "test page script missing ($code)"; [ "${{ inputs.action }}" = deploy ] && fail=1; fi
           code=$(get '/api/test/availability?visited=no'); if grep -q '"ok":true' body.txt; then echo "OK test calendar: $(jq -c '{first, days: (.days|length)}' body.txt)"; else echo "test calendar: $code $(head -c 200 body.txt)"; [ "${{ inputs.action }}" = deploy ] && fail=1; fi
           echo "failed=$fail" >> "$GITHUB_OUTPUT"
           exit $fail

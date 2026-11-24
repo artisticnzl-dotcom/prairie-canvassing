@@ -594,7 +594,7 @@ function testPage(response) {
     .on('#requestForm input[name="email"]',{element(el){el.setAttribute('maxlength','200');}})
     .on('#requestForm input[name="streetAddress"]',{element(el){el.setAttribute('maxlength','150');}})
     .on('#requestForm textarea[name="notes"]',{element(el){el.setAttribute('maxlength','1000');}})
-    .on('script[src="/assets/appointments.js"]',{element(el){el.setAttribute('src','/assets/appointments-test.js');}})
+    .on('script[src="/assets/appointments.js"]',{element(el){el.setAttribute('src','/booking-test-app.js');}})
     .transform(response);
   rewritten.headers.set('Cache-Control','no-store');rewritten.headers.set('X-Robots-Tag','noindex, nofollow');
   rewritten.headers.delete('ETag');return rewritten;
@@ -608,7 +608,7 @@ worker_default.fetch = async function(request, env, ctx) {
   const testEnv = {...env, PLP_SUPABASE_PUBLISHABLE_KEY: PLP_TEST_PUBLIC_KEY};
   if(url.pathname === '/api/test/availability') return testAvailability(request,testEnv);
   if(url.pathname === '/api/test/booking') return testBooking(request,testEnv);
-  if(url.pathname === '/assets/appointments-test.js') return new Response(TEST_CLIENT_JS,{headers:{...HEADERS,'Content-Type':'text/javascript; charset=utf-8'}});
+  if(url.pathname === '/booking-test-app.js') return new Response(TEST_CLIENT_JS,{headers:{...HEADERS,'Content-Type':'text/javascript; charset=utf-8'}});
   if(url.pathname === '/booking-test') {
     if(request.method!=='GET')return new Response(null,{status:405,headers:{Allow:'GET',...HEADERS}});
     const home = new URL('/',url.origin);
