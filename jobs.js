@@ -371,7 +371,7 @@
             choiceBox.innerHTML = '';
             const style = choiceGroup(choiceBox, req
               ? [['now', 'Today', 'Do the work now.'], ['scheduled', 'Schedule a date', 'Any day that works for them.']]
-              : [['now', 'Today, at the customer’s request', 'Do the work now. They can still cancel and get a full refund.'],
+              : [['now', 'Today — only if they asked us to come out', 'They contacted you before you knocked, or booked on their own after.'],
                  ['scheduled', 'Schedule after the cancel period', 'First open day: ' + PJ.longDate(PJ.firstScheduleDate(today)) + '.']],
               key => j.timing === key, key => { j.timing = key; drawWhen(); });
             drawWhen = () => {
@@ -379,6 +379,18 @@
               when.innerHTML = '';
               dateField = null;
               if (j.timing === 'now') { j.service_date = today; j.service_window = ''; }
+              if (j.timing === 'now' && !PJ.isRequested(j)) {
+                when.appendChild(el('p', 'tip', 'Why can the work be done today?'));
+                const styleWhy = choiceGroup(when, PJ.TODAY_REASONS.map(([k, t]) => [k, t, '']),
+                  key => j.request.reason === key, key => { j.request.reason = key; styleWhy(); });
+                styleWhy();
+                if (!j.request.date) j.request.date = today;
+                const rd = input(when, 'Date they contacted us', j.request.date, { type: 'date', onInput: v => { j.request.date = v; } });
+                rd.max = today;
+                when.reqDate = rd;
+                select(when, 'How they contacted us', [''].concat(PJ.TODAY_METHODS), PJ.TODAY_METHODS.indexOf(j.request.method) >= 0 ? j.request.method : '', v => { j.request.method = v; });
+                when.appendChild(el('p', 'tip warn', 'If you knocked and they did not contact you on their own, choose “Schedule after the cancel period”.'));
+              }
               if (j.timing !== 'scheduled') return;
               const first = firstDate();
               if (!(j.service_date >= first)) j.service_date = first;
@@ -414,6 +426,13 @@
             if (!c.phone.trim() && !c.email.trim()) return ph.showError('Add a phone number or email so you can reach them.');
             if (requestedOn && !originCheck()) return;
             if (j.timing !== 'now' && j.timing !== 'scheduled') { toast('Choose when the work will be done.', true); return; }
+            if (j.timing === 'now' && !PJ.isRequested(j)) {
+              if (!todayReasonOk(j)) {
+                if (!j.request.reason) { toast('Choose why the work can be done today.', true); return; }
+                if (!PJ.parseYmd(j.request.date) || j.request.date > today) return when.reqDate.showError('Enter the date they contacted you.');
+                toast('Choose how they contacted you.', true); return;
+              }
+            }
             if (j.timing === 'scheduled' && !(PJ.parseYmd(j.service_date) && j.service_date >= firstDate())) return dateField.showError('Pick a date on or after ' + PJ.longDate(firstDate()) + '.');
             persist().then(() => go(1));
           }));
@@ -588,6 +607,7 @@
 
     if (isNewCustomer) saved = false;
     if (step > 0 && j.timing !== 'now' && j.timing !== 'scheduled') step = 0;
+    if (step > 0 && j.timing === 'now' && !PJ.isRequested(j) && !todayReasonOk(j)) step = 0;   // work today needs the customer's request
     if (step > 0 && business().requested_visits && j.origin !== 'door' && j.origin !== 'customer_request') step = 0;   // when the work happens is chosen in step 1
     go(step);
   }
@@ -729,6 +749,7 @@
     const minDate = PJ.isRequested(j) ? tx : PJ.firstScheduleDate(tx);
     if (j.timing === 'scheduled' && !(j.service_date >= minDate))
       throw new Error('The scheduled date must be on or after ' + PJ.longDate(minDate) + '. Go back to step 1 and pick a new date.');
+    if (j.timing === 'now' && !PJ.isRequested(j) && !todayReasonOk(j)) throw new Error('Work today is only for customers who asked you to come out. Go back to step 1 and choose why, or schedule it after the cancel period.');
     if (PJ.isRequested(j) && !business().requested_visits) throw new Error('Customer-requested visits are turned off in Settings. Go back to step 1 and choose how the job started.');
     const ctx = ctxFor(c, j, version, tx);
     const r = PJ.renderAgreement(ctx);
@@ -741,7 +762,7 @@
       template: T.template, agreement_no: ctx.agreement_no, transaction_date: tx, business: ctx.business,
       customer: { first_name: c.first_name, last_name: c.last_name, street: c.street, city: c.city, state: c.state, zip: c.zip, phone: c.phone, email: c.email },
       service_date: j.service_date, timing: j.timing || '', service_window: j.service_window || '',
-      origin: j.origin || 'door', request: PJ.isRequested(j) ? { date: j.request.date, method: j.request.method } : {}, services: j.services, adjustments: j.adjustments, technician: ctx.technician, notice: r.notice,
+      origin: j.origin || 'door', request: requestFor(j), services: j.services, adjustments: j.adjustments, technician: ctx.technician, notice: r.notice,
     };
     const a = { id, job_id: j.id, customer_id: c.id, version, document: doc, document_text: r.text, document_sha256: hash, total_cents: r.total_cents,
       signer_name: signerName, signed_at: signedAt, signed_tz: Intl.DateTimeFormat().resolvedOptions().timeZone || '', cancel_by: r.cancel_by,
@@ -754,7 +775,7 @@
     await Store.putRows('agreements', [a]);
     const job = Object.assign({}, jobs.get(j.id) || j, { status: 'signed', agreement_id: id, total_cents: r.total_cents, technician: ctx.technician,
       timing: j.timing || '', service_date: j.service_date, service_window: j.service_window || '',
-      origin: j.origin || 'door', request: PJ.isRequested(j) ? { date: j.request.date, method: j.request.method } : {} });
+      origin: j.origin || 'door', request: requestFor(j) });
     await saveJob(job);
     markDoor(job, c, 'BOOKED');
     Sync.soon();
@@ -1062,6 +1083,17 @@
     } finally { URL.revokeObjectURL(url); }
   }
 
+  /** Work today needs a reason: the customer asked us to come out (before or after we knocked). */
+  function todayReasonOk(j) {
+    const r = j.request || {};
+    return PJ.TODAY_REASONS.some(x => x[0] === r.reason) && !!PJ.parseYmd(r.date) && r.date <= PJ.ymd(new Date()) && PJ.TODAY_METHODS.indexOf(r.method) >= 0;
+  }
+  function requestFor(j) {
+    const r = j.request || {};
+    if (PJ.isRequested(j)) return { date: r.date, method: r.method };
+    if (j.timing === 'now') return { date: r.date, method: r.method, reason: r.reason };
+    return {};
+  }
   // Jobs where the technician is adding services found on site (kept on this device only).
   const addOnJobs = new Set();
   /** Extra work found during the visit: the customer approves it by signing an updated agreement. */
@@ -1069,10 +1101,13 @@
     const cur = jobs.get(jobId);
     const c = customers.get(cur.customer_id);
     addOnJobs.add(jobId);
-    // Extra work sold at the door is done today and always carries the 3-day right to cancel.
-    const d = Object.assign({}, cur, { status: 'draft', timing: 'now', service_date: PJ.ymd(new Date()), service_window: '', origin: 'door' });
+    // Extra work always carries the 3-day right to cancel. It can be done today only when the
+    // customer asked us to come out; otherwise step 1 asks when it will be done.
+    const d = Object.assign({}, cur, { status: 'draft', timing: 'now', service_date: PJ.ymd(new Date()), service_window: '', origin: 'door', request: Object.assign({}, cur.request || {}) });
+    if (PJ.isRequested(cur) && !d.request.reason) d.request.reason = 'before_door';   // they called us before this visit
+    if (!todayReasonOk(d)) d.timing = '';
     await saveJob(d);
-    wizard(c, d, 1, false);
+    wizard(c, d, d.timing ? 1 : 0, false);
   }
 
   function inspection(jobId, confirmed) {

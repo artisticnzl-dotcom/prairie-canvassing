@@ -1,6 +1,6 @@
 /* Generated from shared/agreement.json — the same wording the Android app uses. */
 window.PC_AGREEMENT = {
-  "template": "PLP-SA-2026-11.3",
+  "template": "PLP-SA-2026-11.4",
   "review_note": "Draft for legal review before production use.",
   "title": "Dryer Vent Service Agreement",
   "sections": [
@@ -49,10 +49,20 @@ window.PC_AGREEMENT = {
   "technician_oral_notice": "I told the customer, out loud, about their right to cancel within three business days.",
   "timing": {
     "heading": "8. When the work will be done",
-    "now": "At your request, {{business_name}} will begin the work today, {{service_date}}, before your cancellation period ends. You still have the right to cancel this agreement until midnight of {{cancel_by_date}}, even if the work is already finished. If you cancel, every payment you made will be refunded within 10 business days, as explained in the Notice of Cancellation.",
+    "now": "The work will be done today, {{service_date}}, because you asked {{business_name}} to come out: {{today_reason}} You contacted us by {{request_method}} on {{request_date}}.",
     "scheduled": "The work is scheduled for {{service_date}}{{service_window}}, after your cancellation period ends at midnight of {{cancel_by_date}}. No work will be done and no payment will be collected before the scheduled date. If you need a different date, contact us and we will reschedule at no charge.",
-    "now_customer_tick": "Customer: I asked for the work to be done today. I understand I can still cancel until midnight of {{cancel_by_date}} and get all my money back.",
-    "scheduled_customer_tick": "Customer: I understand the work is scheduled for {{service_date}}{{service_window}}, after my cancellation period ends."
+    "now_customer_tick": "Customer: {{today_reason_customer}}",
+    "scheduled_customer_tick": "Customer: I understand the work is scheduled for {{service_date}}{{service_window}}, after my cancellation period ends.",
+    "now_reasons": {
+      "before_door": {
+        "text": "you contacted us before we came to your door.",
+        "customer": "I contacted {{business_name}} before they came to my door and asked for this visit."
+      },
+      "after_door": {
+        "text": "we came to your door first, and you later contacted us on your own to book this visit.",
+        "customer": "{{business_name}} came to my door first, and I later contacted them on my own to book this visit."
+      }
+    }
   },
   "requested": {
     "section": {

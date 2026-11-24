@@ -10,6 +10,7 @@
     payment_terms: 'Payment is due when the work is completed. We accept check, card, or ACH bank transfer.',
     services: [
       { name: 'Standard Dryer Vent Cleaning', description: 'Clean the dryer vent line from the dryer connection to the exterior termination, where accessible.', price_cents: 14900, default: true },
+      { name: 'Roof-Exhaust Dryer Vent Cleaning', description: 'Clean a dryer vent line that exits through the roof, where accessible.', price_cents: 16900, default: false },
       { name: 'Additional Dryer Vent Cleaning', description: 'Cleaning of an additional dryer vent line at the same property.', price_cents: 9900, default: false },
       { name: 'Inspection Only', description: 'Visual and camera inspection of accessible vent sections with a written report. No cleaning.', price_cents: 7900, default: false },
     ],
@@ -104,6 +105,10 @@
   const REQUEST_METHODS = ['Phone call', 'Text message', 'Website booking', 'Email', 'Social media message', 'Other'];
   /** True when the customer asked us to come (no 3-day right for that requested maintenance visit). */
   function isRequested(j) { return !!j && j.origin === 'customer_request'; }
+  /** Ways a customer can ask us to come out for work done today. */
+  const TODAY_METHODS = ['Phone call', 'Text message', 'Email', 'Website booking'];
+  /** Why the work can be done today: the customer asked us to come out. */
+  const TODAY_REASONS = [['before_door', 'They contacted us before we came to their door'], ['after_door', 'We knocked first, and they later contacted us on their own to book']];
   function requestMethodText(m) { return !m || m === 'Other' ? 'another method' : String(m).toLowerCase(); }
 
   function renderAgreement(ctx) {
@@ -120,6 +125,9 @@
       service_window: j.service_window ? ', ' + String(j.service_window).toLowerCase() : '',
       request_date: rq.date ? longDate(rq.date) : '', request_method: requestMethodText(rq.method),
     };
+    const why = t.timing && t.timing.now_reasons && t.timing.now_reasons[rq.reason];
+    vars.today_reason = why ? why.text : '';
+    vars.today_reason_customer = why ? fill(why.customer, vars) : '';
     const L = [];
     L.push(b.name.toUpperCase() + ' — ' + t.title.toUpperCase());
     L.push([b.name, businessAddress(b), b.phone, b.email, b.website].filter(Boolean).join(' · '));
@@ -171,7 +179,7 @@
     const d = parseYmd(cancelBy(transactionYmd)); d.setDate(d.getDate() + 1); return ymd(d);
   }
 
-  const api = { REQUEST_METHODS, isRequested, requestMethodText, firstScheduleDate, DEFAULT_BUSINESS, MONTHS, money, parseMoney, lineCents, totals, ymd, parseYmd, longDate, holidays, isBusinessDay,
+  const api = { REQUEST_METHODS, TODAY_METHODS, TODAY_REASONS, isRequested, requestMethodText, firstScheduleDate, DEFAULT_BUSINESS, MONTHS, money, parseMoney, lineCents, totals, ymd, parseYmd, longDate, holidays, isBusinessDay,
     cancelBy, fill, cityLine, fullName, serviceAddress, businessAddress, renderAgreement, agreementNo };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.PJ = api;
 })(typeof self !== 'undefined' ? self : this);
