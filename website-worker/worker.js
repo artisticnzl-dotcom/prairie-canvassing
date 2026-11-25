@@ -851,7 +851,7 @@ async function plpLiveFetch(request, env, ctx) {
 function plpAddBlogLinks(response) {
   if (!response.headers.get('Content-Type')?.includes('text/html')) return response;
   const nav = { done: false, cls: null, seen: false }, foot = { done: false, cls: null, has: false };
-  const link = cls => '<a href="/blog"' + (cls ? ' class="' + cls.replace(/(active|current|is-active)/g, '').trim() + '"' : '') + '>Blog</a>';
+  const link = cls => '<a href="/blog"' + (cls ? ' class="' + cls.replace(/\b(active|current|is-active)\b/g, '').trim() + '"' : '') + '>Blog</a>';
   const out = new HTMLRewriter()
     .on('a[href="/blog"]', { element() { nav.has = true; } })
     .on('nav', { element(el) {
@@ -861,7 +861,7 @@ function plpAddBlogLinks(response) {
     .on('nav a', { element(el) {
       if (nav.done) return;
       if (nav.cls === null) nav.cls = el.getAttribute('class') || '';
-      if (!nav.has && /btn/.test(el.getAttribute('class') || '')) { el.before(link(nav.cls), { html: true }); nav.done = true; }
+      if (!nav.has && /\bbtn\b/.test(el.getAttribute('class') || '')) { el.before(link(nav.cls), { html: true }); nav.done = true; }
     } })
     .on('footer a', { element(el) { foot.has = true; if (foot.cls === null) foot.cls = el.getAttribute('class') || ''; } })
     .on('footer', { element(el) {
