@@ -6,9 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'deploy | go-live | check | test-booking | rollback'
+        description: 'What to do'
         required: true
-        default: check
+        type: choice
+        default: deploy
+        options: [deploy, check, test-booking, rollback, go-live]
       version_id:
         description: 'Version to roll back to (rollback only)'
         required: false
