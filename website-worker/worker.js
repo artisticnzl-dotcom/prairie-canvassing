@@ -858,7 +858,11 @@ function plpAddBlogLinks(response) {
       if (nav.done || nav.seen) return; nav.seen = true;
       el.onEndTag(end => { if (!nav.done && !nav.has) { end.before(link(nav.cls), { html: true }); nav.done = true; } });
     } })
-    .on('nav a', { element(el) { if (!nav.done && nav.cls === null) nav.cls = el.getAttribute('class') || ''; } })
+    .on('nav a', { element(el) {
+      if (nav.done) return;
+      if (nav.cls === null) nav.cls = el.getAttribute('class') || '';
+      if (!nav.has && /btn/.test(el.getAttribute('class') || '')) { el.before(link(nav.cls), { html: true }); nav.done = true; }
+    } })
     .on('footer a', { element(el) { foot.has = true; if (foot.cls === null) foot.cls = el.getAttribute('class') || ''; } })
     .on('footer', { element(el) {
       if (foot.done) return;
