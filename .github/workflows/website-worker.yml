@@ -128,6 +128,19 @@ jobs:
           code=$(get /)
           n=$(grep -o 'href="/blog"' body.txt | wc -l)
           if [ "$n" -ge 1 ]; then echo "OK homepage links to the blog ($n links)"; tr '\n' ' ' < body.txt | grep -o '.\{160\}href="/blog"[^<]*</a>' | sed 's/^/   near: /' | head -3; else echo "FAIL homepage has no blog link"; fail=1; fi
+          if [ "${{ inputs.action }}" = check ]; then
+            echo "--- menu layout (diagnostic) ---"
+            curl -sS "$SITE/" -H 'Cache-Control: no-cache' -o home.html
+            echo "links to #faq: $(grep -o 'href="#faq"' home.html | wc -l)"
+            tr '\n' ' ' < home.html | grep -o '<header.\{0,1800\}' | head -c 1800; echo
+            tr '\n' ' ' < home.html | grep -o '.\{300\}href="#faq".\{200\}' | sed 's/^/   faq: /'
+            for css in $(grep -o 'href="[^"]*\.css[^"]*"' home.html | cut -d'"' -f2 | head -3); do
+              echo "css: $css"; curl -sS "$SITE$css" | tr '\n' ' ' | grep -o '@media[^{]*{[^@]\{0,900\}' | grep -i 'nav\|menu' | head -4
+            done
+            tr '\n' ' ' < home.html | grep -o '<style.\{0,200\}' | head -2
+            tr '\n' ' ' < home.html | grep -o '@media[^{]*{[^@]\{0,600\}' | grep -i 'nav\|menu' | head -4
+            tr '\n' ' ' < home.html | grep -o '.\{150\}\(menu-toggle\|hamburger\|aria-expanded\).\{250\}' | head -3
+          fi
           echo "failed=$fail" >> "$GITHUB_OUTPUT"
           exit $fail
       - name: Roll back automatically if a check failed
