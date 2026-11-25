@@ -768,7 +768,8 @@ async function liveBooking(request, env, deps = {}) {
     fullName: get('fullName'), phone: get('phone'), email: get('email'), contactMethod: get('contactMethod'),
     technicianVisit: get('technicianVisit'), preferredTime: '', streetAddress: get('streetAddress'), unit: get('unit'),
     city: get('city'), zip: get('zip'), date: slot.date, startHour: String(Number(String(slot.window || '').slice(0, 2))),
-    requestId, type: get('type'), notes: get('notes'),
+    requestId, type: get('type'),
+    notes: [get('referredBy') ? `Referred by: ${get('referredBy')}${get('referrerPhone') ? ' (' + get('referrerPhone') + ')' : ''}` : '', get('notes')].filter(Boolean).join('\n'),
   };
   const delivery = {};
   let customerEmailSent = done.customer_email === 'sent';
@@ -817,6 +818,7 @@ worker_default.fetch = async function(request, env, ctx) {
     const out = new HTMLRewriter()
       .on('script[src="/assets/appointments.js"]', { element(el) { el.setAttribute('src', '/booking-app.js'); } })
       .on('#requestForm', { element(el) { el.append('<input type="hidden" name="slotId">', { html: true }); } })
+      .on('#book .fields', { element(el) { el.append("<div class=\"field\"><label for=\"referredBy\">Who referred you? (optional)</label><input id=\"referredBy\" name=\"referredBy\" maxlength=\"100\" autocomplete=\"off\"></div><div class=\"field\"><label for=\"referrerPhone\">Their phone number (optional)</label><input id=\"referrerPhone\" name=\"referrerPhone\" type=\"tel\" maxlength=\"40\" autocomplete=\"off\"></div>", { html: true }); } })
       .transform(response);
     out.headers.delete('ETag'); out.headers.set('Cache-Control', 'no-cache');
     return out;
