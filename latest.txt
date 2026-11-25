@@ -1,4 +1,4 @@
-Run 6 action=go-live result=success 2026-11-24T23:55:55Z
+Run 9 action=deploy result=success 2026-11-25T00:26:07Z
 OK homepage
 OK site files
 OK live booking calendar
