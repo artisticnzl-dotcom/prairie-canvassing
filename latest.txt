@@ -1,4 +1,4 @@
-Run 9 action=deploy result=success 2026-11-25T00:26:07Z
+Run 10 action=deploy result=success 2026-11-25T05:48:41Z
 OK homepage
 OK site files
 OK live booking calendar
@@ -9,3 +9,4 @@ OK live form uses the shared calendar
 OK live form script
 OK live calendar from shared calendar: {"first":"2026-11-25","days":20}
 OK live booking handler (validation only, nothing saved)
+OK blog page (site layout)
