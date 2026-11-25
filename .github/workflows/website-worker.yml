@@ -119,6 +119,11 @@ jobs:
             code=$(curl -sS -o body.txt -w '%{http_code}' -X POST "$SITE/api/booking" -H "Origin: $SITE" -H 'Accept: application/json' -H 'Content-Type: application/x-www-form-urlencoded' --data 'requestId=check&technicianVisit=no')
             if [ "$code" = 422 ] && grep -q 'refresh the page' body.txt; then echo "OK live booking handler (validation only, nothing saved)"; else echo "FAIL live booking handler ($code): $(head -c 200 body.txt)"; fail=1; fi
           fi
+          code=$(get /blog)
+          if [ "$code" = 200 ] && grep -q 'id="soro-blog"' body.txt && grep -q 'app.trysoro.com/api/embed/' body.txt; then
+            if grep -q '<p><a href="/">Prairie Lint Patrol</a></p>' body.txt; then echo "OK blog page (plain layout: homepage has no <main>)"; else echo "OK blog page (site layout)"; fi
+            grep -qi 'http-equiv="Content-Security-Policy"' body.txt && echo "NOTE homepage has a Content-Security-Policy meta tag; the blog script may be blocked"
+          else echo "FAIL blog page ($code)"; fail=1; fi
           echo "failed=$fail" >> "$GITHUB_OUTPUT"
           exit $fail
       - name: Roll back automatically if a check failed
