@@ -127,6 +127,7 @@ jobs:
           else echo "FAIL blog page ($code)"; fail=1; fi
           code=$(get /)
           n=$(grep -o 'href="/blog"' body.txt | wc -l)
+          if tr '\n' ' ' < body.txt | grep -q 'id="mobilemenu"[^>]*>.\{0,600\}href="/blog"'; then echo "OK phone menu links to the blog"; else echo "FAIL phone menu has no blog link"; fail=1; fi
           if [ "$n" -ge 1 ]; then echo "OK homepage links to the blog ($n links)"; tr '\n' ' ' < body.txt | grep -o '.\{160\}href="/blog"[^<]*</a>' | sed 's/^/   near: /' | head -3; else echo "FAIL homepage has no blog link"; fail=1; fi
           if [ "${{ inputs.action }}" = check ]; then
             echo "--- menu layout (diagnostic) ---"

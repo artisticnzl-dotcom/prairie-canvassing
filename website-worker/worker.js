@@ -851,7 +851,7 @@ async function plpLiveFetch(request, env, ctx) {
 // Adds a "Blog" link to the first menu and to the footer of every page, styled like the links already there.
 function plpAddBlogLinks(response) {
   if (!response.headers.get('Content-Type')?.includes('text/html')) return response;
-  const nav = { done: false, cls: null, seen: false }, foot = { done: false, cls: null, has: false };
+  const mob = { done: false }, nav = { done: false, cls: null, seen: false }, foot = { done: false, cls: null, has: false };
   const link = cls => '<a href="/blog"' + (cls ? ' class="' + cls.replace(/\b(active|current|is-active)\b/g, '').trim() + '"' : '') + '>Blog</a>';
   const out = new HTMLRewriter()
     .on('a[href="/blog"]', { element() { nav.has = true; } })
@@ -863,6 +863,12 @@ function plpAddBlogLinks(response) {
       if (nav.done) return;
       if (nav.cls === null) nav.cls = el.getAttribute('class') || '';
       if (!nav.has && /\bbtn\b/.test(el.getAttribute('class') || '')) { el.before(link(nav.cls), { html: true }); nav.done = true; }
+    } })
+    .on('#mobilemenu', { element(el) { el.onEndTag(end => { if (!mob.done) { end.before('<a href="/blog">Blog</a>', { html: true }); mob.done = true; } }); } })
+    .on('#mobilemenu a', { element(el) {
+      if (mob.done) return;
+      if ((el.getAttribute('href') || '') === '/blog') { mob.done = true; return; }
+      if (/#book$/.test(el.getAttribute('href') || '')) { el.before('<a href="/blog">Blog</a>', { html: true }); mob.done = true; }
     } })
     .on('footer a', { element(el) { foot.has = true; if (foot.cls === null) foot.cls = el.getAttribute('class') || ''; } })
     .on('footer', { element(el) {
