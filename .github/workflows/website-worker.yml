@@ -55,7 +55,7 @@ jobs:
           HASH=$(printf '%s' "$KEY" | sha256sum | cut -d' ' -f1)
           R=$(curl -sS -X POST "https://bhouipoucvprekksdbjd.supabase.co/rest/v1/rpc/enroll_live_key" -H "apikey: $SB_KEY" -H 'Content-Type: application/json' -d "{\"p_hash\":\"$HASH\"}")
           echo "Registered with the shared calendar: $R"
-          echo "$R" | jq -e '.ok == true' > /dev/null || { echo "Could not register the live key; stopping without changes."; exit 1; }
+          echo "$R" | jq -e '.ok == true' > /dev/null || { echo "Could not register a new live key (the site is probably already live — use deploy instead). Stopping without changes."; exit 1; }
           jq -n --arg k "$KEY" '[{type:"secret_text", name:"PLP_BOOKING_LIVE_KEY", text:$k}]' > "$RUNNER_TEMP/live-binding.json"
       - name: Deploy new version
         if: inputs.action == 'deploy' || inputs.action == 'go-live'
@@ -152,10 +152,16 @@ jobs:
           rid="web_test_gh2_$(date +%s)"; post
       - name: Save the results where Claude can read them (no secrets)
         if: always()
+        continue-on-error: true
         run: |
-          { echo "Run ${{ github.run_number }} action=${{ inputs.action }} result=${{ job.status }} $(date -u +%FT%TZ)"; cat "$RUNNER_TEMP/report.txt" 2>/dev/null; } > /tmp/report.txt
-          git config user.name "website-worker"; git config user.email "actions@users.noreply.github.com"
-          git fetch -q origin workflow-reports 2>/dev/null && git checkout -q -B workflow-reports FETCH_HEAD || git checkout -q --orphan workflow-reports
-          git rm -rqf --cached . 2>/dev/null || true
-          cp /tmp/report.txt latest.txt; cp /tmp/report.txt "run-${{ github.run_number }}.txt"
-          git add latest.txt "run-${{ github.run_number }}.txt"; git commit -qm "Website Worker run ${{ github.run_number }}" && git push -q origin HEAD:workflow-reports || echo "Could not save report"
+          { echo "Run ${{ github.run_number }} action=${{ inputs.action }} result=${{ job.status }} $(date -u +%FT%TZ)"; cat "$RUNNER_TEMP/report.txt" 2>/dev/null; } > "$RUNNER_TEMP/out.txt"
+          D="$RUNNER_TEMP/reports"; rm -rf "$D"; mkdir -p "$D"; cd "$D"
+          git init -q; git config user.name "website-worker"; git config user.email "actions@users.noreply.github.com"
+          git remote add origin "$(git -C "$GITHUB_WORKSPACE" remote get-url origin)"
+          AUTH=$(git -C "$GITHUB_WORKSPACE" config --get-regexp '^http\..*\.extraheader$' | head -1)
+          [ -n "$AUTH" ] && git config "${AUTH%% *}" "${AUTH#* }"
+          if git fetch -q --depth 1 origin workflow-reports; then git checkout -q -B workflow-reports FETCH_HEAD; else git checkout -q --orphan workflow-reports; fi
+          cp "$RUNNER_TEMP/out.txt" latest.txt; cp "$RUNNER_TEMP/out.txt" "run-${{ github.run_number }}.txt"
+          git add latest.txt "run-${{ github.run_number }}.txt"
+          git commit -qm "Website Worker run ${{ github.run_number }}"
+          git push -q origin HEAD:workflow-reports
