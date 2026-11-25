@@ -124,6 +124,9 @@ jobs:
             if grep -q '<p><a href="/">Prairie Lint Patrol</a></p>' body.txt; then echo "OK blog page (plain layout: homepage has no <main>)"; else echo "OK blog page (site layout)"; fi
             grep -qi 'http-equiv="Content-Security-Policy"' body.txt && echo "NOTE homepage has a Content-Security-Policy meta tag; the blog script may be blocked"
           else echo "FAIL blog page ($code)"; fail=1; fi
+          code=$(get /)
+          n=$(grep -o 'href="/blog"' body.txt | wc -l)
+          if [ "$n" -ge 1 ]; then echo "OK homepage links to the blog ($n links)"; tr '\n' ' ' < body.txt | grep -o '.\{160\}href="/blog"[^<]*</a>' | sed 's/^/   near: /' | head -3; else echo "FAIL homepage has no blog link"; fail=1; fi
           echo "failed=$fail" >> "$GITHUB_OUTPUT"
           exit $fail
       - name: Roll back automatically if a check failed
