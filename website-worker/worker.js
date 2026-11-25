@@ -816,6 +816,7 @@ async function plpBlog(request, env, ctx, url) {
     .on('meta[property="og:url"]', { element(el) { el.setAttribute('content', canonical); } })
     .on('meta[property="og:title"]', { element(el) { el.setAttribute('content', 'Dryer Vent Safety Blog | Prairie Lint Patrol'); } })
     .on('script[type="application/ld+json"]', { element(el) { el.remove(); } })
+    .on('a[href^="#"]', { element(el) { const h = el.getAttribute('href'); if (h.length > 1) el.setAttribute('href', '/' + h); } })
     .on('main', { element(el) { replaced = true; el.setInnerContent('<section class="plp-blog" style="max-width:960px;margin:0 auto;padding:32px 16px 56px"><div id="soro-blog"></div></section>', { html: true }); } })
     .on('body', { element(el) { el.append('<script src="https://app.trysoro.com/api/embed/b40979ba-699d-423b-bada-3731357aba47" defer></script>', { html: true }); } })
     .transform(home);
