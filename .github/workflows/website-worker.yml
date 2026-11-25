@@ -144,6 +144,36 @@ jobs:
           fi
           echo "failed=$fail" >> "$GITHUB_OUTPUT"
           exit $fail
+      - name: Check SEO and answer content
+        if: inputs.action == 'deploy' || inputs.action == 'check' || inputs.action == 'go-live'
+        run: |
+          set -eu
+          curl -fsS --max-time 25 "$SITE/" -o seo-home.html
+          grep -q 'id="plp-search-data"' seo-home.html
+          grep -q 'Which Kansas communities does Prairie Lint Patrol serve?' seo-home.html
+          grep -q 'What is included in a Prairie Lint Patrol cleaning?' seo-home.html
+          grep -q 'How do I schedule dryer vent cleaning with Prairie Lint Patrol?' seo-home.html
+          python3 - <<'PY'
+          import json, re
+          html = open('seo-home.html').read()
+          graph = json.loads(re.search(r'<script id="plp-search-data" type="application/ld\+json">(.*?)</script>', html, re.S)[1])['@graph']
+          assert not any('streetAddress' in json.dumps(node) for node in graph)
+          faq = next(node for node in graph if node['@type'] == 'FAQPage')
+          assert all(item['name'] in html and item['acceptedAnswer']['text'] in html for item in faq['mainEntity'])
+          assert len(re.findall(r'<title>', html)) == 1
+          assert len(re.findall(r'rel="canonical"', html)) == 1
+          print('OK structured data matches visible answers; no street address')
+          PY
+          for town in hesston newton mcpherson wichita; do
+            curl -fsS --max-time 25 "$SITE/dryer-vent-cleaning-$town-ks" -o seo-city.html
+            grep -q 'BreadcrumbList' seo-city.html
+            grep -q 'id="plp-search-data"' seo-city.html
+            echo "OK $town search metadata"
+          done
+          curl -fsS --max-time 25 "$SITE/sitemap.xml" | grep -q 'https://prairielintpatrol.com/blog</loc>'
+          curl -fsS --max-time 25 "$SITE/thanks" -D seo-headers.txt -o /dev/null
+          grep -qi 'x-robots-tag: noindex' seo-headers.txt
+          echo "OK blog sitemap and noindex confirmation page"
       - name: Roll back automatically if a check failed
         if: failure() && (inputs.action == 'deploy' || inputs.action == 'go-live') && steps.deploy.outputs.new != '' && steps.state.outputs.prev != ''
         env: { CF_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
