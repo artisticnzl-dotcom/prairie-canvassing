@@ -1,4 +1,4 @@
-Run 10 action=deploy result=success 2026-11-25T05:48:41Z
+Run 11 action=deploy result=success 2026-11-25T05:59:48Z
 OK homepage
 OK site files
 OK live booking calendar
@@ -10,3 +10,6 @@ OK live form script
 OK live calendar from shared calendar: {"first":"2026-11-25","days":20}
 OK live booking handler (validation only, nothing saved)
 OK blog page (site layout)
+OK homepage links to the blog (2 links)
+   near: cing</a><a href="#areas">Service area</a><a href="#staff">Meet the Staff</a><a href="#faq">FAQs</a><a class="btn small" href="#book">Request a cleaning ↗</a><a href="/blog">Blog</a>
+   near: idscansecure.com/siteseal/siteseal.js?code=65,04D7FD2C2D2F8DB14081A655DE68EA09796D6D30'></script></div></div><p class="plp-blog-link" style="margin:8px 0 0"><a href="/blog">Blog</a>
