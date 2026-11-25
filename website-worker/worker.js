@@ -884,3 +884,108 @@ worker_default.fetch = async function(request, env, ctx) {
   const response = await plpLiveFetch(request, env, ctx);
   return request.method === 'GET' ? plpAddBlogLinks(response) : response;
 };
+
+// Search metadata and visible answers share the same verified business facts.
+// Service-area business: never publish a street address or invent local offices.
+const PLP_SEO_ORIGIN = 'https://prairielintpatrol.com';
+const PLP_SEO_TOWNS = {hesston:'Hesston',newton:'Newton',mcpherson:'McPherson',wichita:'Wichita'};
+const PLP_SEO_AREAS = ['Hesston','Newton','McPherson','Moundridge','Halstead','Wichita','Park City','Valley Center','Andover'];
+const PLP_SEO_ANSWERS = [
+  ['How much does Prairie Lint Patrol charge for dryer vent cleaning?', 'Standard dryer vent cleaning is $149 and roof-exhaust dryer vent cleaning is $169 for a typical accessible home vent. Very long runs, difficult access, and multiple units or properties receive a custom quote. Your total is confirmed in writing before work begins.'],
+  ['What is included in a Prairie Lint Patrol cleaning?', 'Every completed cleaning includes cleaning of accessible dryer exhaust ductwork, a post-cleaning camera scope check of safely accessible sections, and a written report with photos. An airflow comparison is included when feasible. We explain any areas we cannot reach or inspect.'],
+  ['Which Kansas communities does Prairie Lint Patrol serve?', 'Prairie Lint Patrol LLC is based in Hesston, Kansas, and serves homeowners in Hesston, Newton, McPherson, Moundridge, Halstead, Wichita, Park City, Valley Center, Andover, and surrounding areas by appointment. Contact us to confirm service at your property.'],
+  ['How do I schedule dryer vent cleaning with Prairie Lint Patrol?', 'Request an available appointment through the website calendar, or call or text 620-869-1692. We will follow up to confirm the appointment. No payment is collected through the booking form.']
+];
+function plpSeoPage(path) {
+  if (path === '/' || path === '/index.html') return {
+    path:'/', title:'Dryer Vent Cleaning in Hesston & Newton, KS | Prairie Lint Patrol',
+    description:'Hesston-based dryer vent cleaning serving Newton, Wichita and central Kansas. Camera check and photo report included. $149 standard; $169 roof-exhaust.'
+  };
+  for (const [slug,city] of Object.entries(PLP_SEO_TOWNS)) {
+    if (path === '/dryer-vent-cleaning-'+slug+'-ks') return {
+      path, city, title:'Dryer Vent Cleaning in '+city+', KS | Prairie Lint Patrol',
+      description:city+', KS dryer vent cleaning: $149 standard or $169 roof-exhaust. Includes a camera check and photo report. Call, text or request an appointment online.'
+    };
+  }
+  if (path === '/blog') return {
+    path, title:'Dryer Vent Safety & Care Blog | Prairie Lint Patrol',
+    description:'Dryer vent care, cleaning and maintenance tips from Prairie Lint Patrol, serving Hesston, Newton, Wichita and central Kansas.'
+  };
+  return null;
+}
+function plpSeoGraph(page) {
+  const origin=PLP_SEO_ORIGIN, canonical=origin+page.path;
+  const areas=PLP_SEO_AREAS.map(name=>({'@type':'City',name:name+', Kansas'}));
+  const graph=[
+    {'@type':'Organization','@id':origin+'/#business',name:'Prairie Lint Patrol',legalName:'Prairie Lint Patrol LLC',url:origin+'/',logo:origin+'/assets/logo.png',telephone:'+1-620-869-1692',email:'prairielintpatrol@gmail.com',location:{'@type':'City',name:'Hesston, Kansas'},areaServed:areas},
+    {'@type':'WebSite','@id':origin+'/#website',url:origin+'/',name:'Prairie Lint Patrol',publisher:{'@id':origin+'/#business'},inLanguage:'en-US'},
+    {'@type':page.path==='/blog'?'CollectionPage':'WebPage','@id':canonical+'#webpage',url:canonical,name:page.title,description:page.description,isPartOf:{'@id':origin+'/#website'},about:{'@id':origin+'/#business'},inLanguage:'en-US'}
+  ];
+  if (page.path !== '/blog') {
+    const serviceId=page.city?canonical+'#service':origin+'/#dryer-vent-cleaning';
+    graph[2].mainEntity={'@id':serviceId};
+    graph.push({'@type':'Service','@id':serviceId,name:'Residential dryer vent cleaning'+(page.city?' in '+page.city+', Kansas':''),serviceType:'Dryer vent cleaning',url:canonical,description:'Cleaning of accessible residential dryer exhaust ductwork with a post-cleaning camera scope check, a written report with photos, and an airflow comparison when feasible.',provider:{'@id':origin+'/#business'},areaServed:page.city?{'@type':'City',name:page.city+', Kansas'}:areas,offers:[
+      {'@type':'Offer',name:'Standard dryer vent cleaning',price:'149',priceCurrency:'USD',description:'Typical accessible home vent with an exterior wall termination. Complex jobs receive a custom quote.',url:origin+'/#pricing'},
+      {'@type':'Offer',name:'Roof-exhaust dryer vent cleaning',price:'169',priceCurrency:'USD',description:'Typical accessible home vent with a roof termination. Complex jobs receive a custom quote.',url:origin+'/#pricing'}
+    ]});
+  }
+  if(page.city){
+    graph[2].breadcrumb={'@id':canonical+'#breadcrumb'};
+    graph.push({'@type':'BreadcrumbList','@id':canonical+'#breadcrumb',itemListElement:[
+      {'@type':'ListItem',position:1,name:'Home',item:origin+'/'},
+      {'@type':'ListItem',position:2,name:'Dryer vent cleaning in '+page.city+', KS',item:canonical}
+    ]});
+  }
+  if(page.path==='/') graph.push({'@type':'FAQPage','@id':origin+'/#faq',mainEntity:PLP_SEO_ANSWERS.map(([name,text])=>({'@type':'Question',name,acceptedAnswer:{'@type':'Answer',text}}))});
+  return {'@context':'https://schema.org','@graph':graph};
+}
+function plpApplySeo(response,page) {
+  const canonical=PLP_SEO_ORIGIN+page.path;
+  const esc=value=>value.replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+  const meta='<title>'+esc(page.title)+'</title><meta name="description" content="'+esc(page.description)+'"><link rel="canonical" href="'+canonical+'">'+
+    '<meta property="og:type" content="website"><meta property="og:title" content="'+esc(page.title)+'"><meta property="og:description" content="'+esc(page.description)+'"><meta property="og:url" content="'+canonical+'"><meta property="og:site_name" content="Prairie Lint Patrol">'+
+    '<meta name="twitter:card" content="summary"><meta name="twitter:title" content="'+esc(page.title)+'"><meta name="twitter:description" content="'+esc(page.description)+'">'+
+    '<script id="plp-search-data" type="application/ld+json">'+JSON.stringify(plpSeoGraph(page)).replace(/</g,'\\u003c')+'</script>';
+  const rewriter=new HTMLRewriter()
+    .on('title,meta[name="description"],link[rel="canonical"],meta[property="og:type"],meta[property="og:title"],meta[property="og:description"],meta[property="og:url"],meta[property="og:site_name"],meta[name="twitter:card"],meta[name="twitter:title"],meta[name="twitter:description"],script[type="application/ld+json"]',{element(el){el.remove();}})
+    .on('head',{element(el){el.append(meta,{html:true});}});
+  if(page.path==='/'){
+    const detail=([q,a])=>'<details><summary><h3>'+esc(q)+'</h3></summary><p>'+esc(a)+'</p></details>';
+    rewriter.on('#faq details:nth-of-type(5)',{element(el){el.setInnerContent('<summary><h3>'+esc(PLP_SEO_ANSWERS[0][0])+'</h3></summary><p>'+esc(PLP_SEO_ANSWERS[0][1])+'</p>',{html:true});}});
+    rewriter.on('#faq .faq',{element(el){el.append(PLP_SEO_ANSWERS.slice(1).map(detail).join(''),{html:true});}});
+    for (const [slug,city] of Object.entries(PLP_SEO_TOWNS)) rewriter.on('#areas a[href="/dryer-vent-cleaning-'+slug+'-ks"]',{element(el){el.setInnerContent('⌖ '+city+' dryer vent cleaning');}});
+  }
+  if(page.city) rewriter.on('h1',{element(el){el.before('<p class="plp-breadcrumb" style="font-size:.9rem;margin:0 0 18px"><a href="/">Home</a> / '+esc(page.city)+' dryer vent cleaning</p>',{html:true});}});
+  if(page.path==='/blog') rewriter.on('#soro-blog',{element(el){el.before('<div class="plp-blog-intro"><h1>Dryer Vent Safety &amp; Care Blog</h1><p>Practical dryer vent care and maintenance tips from Prairie Lint Patrol, serving homeowners across central Kansas.</p></div>',{html:true});}});
+  const out=rewriter.transform(response);
+  out.headers.delete('ETag');
+  out.headers.delete('Content-Length');
+  out.headers.set('Cache-Control','no-cache');
+  return out;
+}
+const plpBeforeSearchFetch=worker_default.fetch;
+worker_default.fetch=async function(request,env,ctx){
+  const url=new URL(request.url);
+  const pageRequest=request.method==='GET'||request.method==='HEAD';
+  const canonicalHost=url.protocol==='https:'&&url.hostname==='prairielintpatrol.com';
+  if(pageRequest&&canonicalHost){
+    if(url.pathname==='/index.html') { url.pathname='/'; return Response.redirect(url,308); }
+    for(const slug of Object.keys(PLP_SEO_TOWNS)){
+      const path='/dryer-vent-cleaning-'+slug+'-ks';
+      if(url.pathname===path+'/'||url.pathname===path+'.html'){url.pathname=path;return Response.redirect(url,308);}
+    }
+  }
+  const response=await plpBeforeSearchFetch(request,env,ctx);
+  if(!canonicalHost||!pageRequest||response.status!==200) return response;
+  if(url.pathname==='/sitemap.xml'&&request.method==='GET'){
+    const xml=await response.text();
+    if(!xml.includes('<urlset')||!xml.includes('</urlset>')) return new Response(xml,response);
+    const updated=xml.includes(PLP_SEO_ORIGIN+'/blog</loc>')?xml:xml.replace('</urlset>','<url><loc>'+PLP_SEO_ORIGIN+'/blog</loc></url>\n</urlset>');
+    const out=new Response(updated,response);out.headers.set('Content-Type','application/xml; charset=utf-8');out.headers.delete('ETag');out.headers.delete('Content-Length');out.headers.set('Cache-Control','no-cache');return out;
+  }
+  if(/^\/(?:thanks(?:\.html)?\/?|booking-test\/?)$/.test(url.pathname)||url.pathname.startsWith('/api/')){
+    const out=new Response(response.body,response);out.headers.set('X-Robots-Tag','noindex');return out;
+  }
+  const page=plpSeoPage(url.pathname);
+  return page&&request.method==='GET'&&response.headers.get('Content-Type')?.includes('text/html')?plpApplySeo(response,page):response;
+};
