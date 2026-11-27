@@ -1451,6 +1451,37 @@
     wizard(c, d, d.timing ? 1 : 0, false);
   }
 
+  // On site the vent turns out to exit through the roof: same cleaning the customer asked for, different price.
+  const ROOF_NOTE = ' The vent was found on site to exit through the roof. The new price was explained before any work began.';
+  function roofSwapInfo(j) {
+    const roof = business().services.find(s => /roof/i.test(s.name));
+    const i = (j.services || []).findIndex(s => /^standard/i.test(s.name || ''));
+    if (!roof || i < 0 || (j.services || []).some(s => /roof/i.test(s.name || ''))) return null;
+    return { roof, i, from: j.services[i] };
+  }
+  function roofSwap(jobId) {
+    const cur = jobs.get(jobId), info = roofSwapInfo(cur);
+    if (!info) return;
+    const c = customers.get(cur.customer_id);
+    const requested = PJ.isRequested(cur);
+    const msg = 'Tell the customer first: their vent goes out the roof, so the price is ' + PJ.money(info.roof.price_cents) + ' instead of ' + PJ.money(info.from.price_cents) +
+      '. If they agree, they sign an updated agreement before you start. If they don’t, you can leave without charging them.' +
+      (requested ? '' : ' Because this customer first met us at the door, the updated agreement starts a new 3-day cancel period, so the work moves to a later date.');
+    dialog('Vent goes out the roof', msg, [
+      { label: 'Not now' },
+      { label: 'Customer said no', run: () => dialog('Mark this visit cancelled?', 'No charge. The signed agreement stays on file.',
+        [{ label: 'Back' }, { label: 'Mark cancelled', cls: 'danger', run: () => (() => { const x = jobs.get(jobId); const ins = Object.assign({}, x.inspection || {}); ins.findings = ((ins.findings || '') + '\nCustomer declined the roof-exhaust price. No work done, no charge.').trim(); return saveJob(Object.assign({}, x, { status: 'cancelled', inspection: ins })); })().then(() => openJob(jobId)) }]) },
+      { label: 'Customer agreed', cls: 'primary', run: async () => {
+        const d = Object.assign({}, jobs.get(jobId), { status: 'draft' });
+        d.services = d.services.slice();
+        d.services[info.i] = { name: info.roof.name, description: info.roof.description + ROOF_NOTE, qty: info.from.qty || 1, price_cents: info.roof.price_cents };
+        if (!requested) { d.timing = ''; d.service_window = ''; }
+        d.total_cents = PJ.totals(d.services, d.adjustments).total;
+        await saveJob(d);
+        wizard(c, d, d.timing ? 1 : 0, false);
+      } }]);
+  }
+
   function inspection(jobId, confirmed) {
     const j0 = jobs.get(jobId);
     const c = customers.get(j0.customer_id);
@@ -1496,6 +1527,11 @@
       render(body, foot) {
         body.appendChild(el('p', 'tip', 'Everything saves on this device as you go.'));
         if (finished) body.appendChild(el('p', 'tip warn', 'You’re editing a finished inspection. Your changes save as you type. Tap “Update report” when you’re done so the customer’s report matches.'));
+        if (roofSwapInfo(j)) {
+          const rs = card(body, 'Vent goes out the roof?');
+          rs.appendChild(el('p', 'tip', 'Roof vents are roof-exhaust cleaning (' + PJ.money(roofSwapInfo(j).roof.price_cents) + '). Check before you start, and get the customer’s OK on the new price.'));
+          rs.appendChild(button('Switch to roof-exhaust price', '', async () => { clearTimeout(timer); await saveJob(Object.assign({}, j)); roofSwap(jobId); }));
+        }
         const ms = card(body, 'Found more work?');
         ms.appendChild(el('p', 'tip', 'Explain the extra work and its price first. If the customer wants it, add it here and they sign an updated agreement. Your notes and photos stay.'));
         ms.appendChild(button('+ More services needed', '', async () => {
@@ -1915,6 +1951,7 @@
         if (['signed', 'inspecting', 'completed'].includes(j.status)) {
           more.appendChild(button('+ More services needed', '', () => moreServices(j.id)));
         }
+        if (['signed', 'inspecting'].includes(j.status) && roofSwapInfo(j)) more.appendChild(button('Vent goes out the roof (change price)', '', () => roofSwap(j.id)));
         if (j.status !== 'draft' && j.status !== 'cancelled') {
           more.appendChild(button('Change work or price (new signed version)', '', () => dialog('Change the agreed work?',
             'The signed agreement stays as it is. You’ll edit the services and price, and the customer signs a new version.',
